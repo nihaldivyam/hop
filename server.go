@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
@@ -18,7 +19,7 @@ import (
 	"time"
 )
 
-//go:embed templates/*.html static/style.css
+//go:embed templates/*.html static/*
 var assets embed.FS
 
 var tmpl = template.Must(template.ParseFS(assets, "templates/*.html"))
@@ -27,22 +28,36 @@ var tmpl = template.Must(template.ParseFS(assets, "templates/*.html"))
 // host. The write API and /healthz are mounted on both. Unknown hosts behave
 // like the links host, which keeps local runs (localhost) usable.
 type Server struct {
-	cfg      Config
-	st       *Store
-	links    *http.ServeMux
-	pastes   *http.ServeMux
-	limiter  *limiter
-	styleCSS []byte
+	cfg     Config
+	st      *Store
+	links   *http.ServeMux
+	pastes  *http.ServeMux
+	limiter *limiter
+	// static assets (embedded) keyed by file name, plus a short content hash
+	// used as ?v= in the templates so browsers can cache them hard but never stale.
+	static   map[string][]byte
+	assetVer string
 }
 
 func newServer(cfg Config, st *Store) *Server {
-	css, _ := assets.ReadFile("static/style.css")
 	s := &Server{cfg: cfg, st: st, links: http.NewServeMux(), pastes: http.NewServeMux(),
-		limiter: newLimiter(10, 30), styleCSS: css}
+		limiter: newLimiter(10, 30), static: map[string][]byte{}}
+	h := sha256.New()
+	for _, name := range []string{"style.css", "app.js"} {
+		b, err := assets.ReadFile("static/" + name)
+		if err != nil {
+			panic("embedded static/" + name + " missing: " + err.Error())
+		}
+		s.static[name] = b
+		h.Write(b)
+	}
+	s.assetVer = fmt.Sprintf("%x", h.Sum(nil))[:10]
 
 	for _, m := range []*http.ServeMux{s.links, s.pastes} {
 		m.HandleFunc("GET /healthz", s.healthz)
-		m.HandleFunc("GET /static/style.css", s.static)
+		// explicit paths, not /static/{name}: a wildcard there would conflict with GET /{id}/raw
+		m.HandleFunc("GET /static/style.css", s.serveStatic("style.css"))
+		m.HandleFunc("GET /static/app.js", s.serveStatic("app.js"))
 		m.Handle("GET /api/links", s.auth(s.listLinks))
 		m.Handle("POST /api/links", s.auth(s.createLink))
 		m.Handle("DELETE /api/links/{slug}", s.auth(s.deleteLink))
@@ -120,20 +135,64 @@ func (s *Server) clientIP(r *http.Request) string {
 
 // --- public pages -------------------------------------------------------------
 
+// landing: the two front pages. They carry a tiny in-browser UI (static/app.js)
+// that talks to this origin's /api/* with a token kept in localStorage, so the
+// CSP allows scripts/styles/fetch from 'self' only — the paste view keeps the
+// stricter no-script policy in htmlHeaders.
 func (s *Server) landing(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.htmlHeaders(w)
-		data := map[string]any{"Kind": kind, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost, "PasteHost": s.cfg.PasteHost}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
+		w.Header().Set("Cache-Control", "no-cache")
+		data := map[string]any{
+			"Kind": kind, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost, "PasteHost": s.cfg.PasteHost,
+			"MaxPaste": humanSize(s.cfg.MaxPasteBytes), "DefaultTTL": humanTTL(s.cfg.DefaultPasteTTL),
+			"AssetVer": s.assetVer, "WritesEnabled": s.cfg.Token != "",
+		}
 		if err := tmpl.ExecuteTemplate(w, "landing.html", data); err != nil {
 			log.Printf("landing: %v", err)
 		}
 	}
 }
 
-func (s *Server) static(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	w.Write(s.styleCSS)
+// serveStatic hands out one embedded asset. Requests carrying the current
+// ?v=<hash> are cached for a year; anything else must revalidate (ETag), so a
+// redeploy never leaves a browser with a stale stylesheet.
+func (s *Server) serveStatic(name string) http.HandlerFunc {
+	b := s.static[name]
+	ctype := "application/octet-stream"
+	switch {
+	case strings.HasSuffix(name, ".css"):
+		ctype = "text/css; charset=utf-8"
+	case strings.HasSuffix(name, ".js"):
+		ctype = "text/javascript; charset=utf-8"
+	}
+	etag := `"` + s.assetVer + `"`
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", ctype)
+		w.Header().Set("ETag", etag)
+		if r.URL.Query().Get("v") == s.assetVer {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(b)
+	}
+}
+
+func humanTTL(d time.Duration) string {
+	switch {
+	case d == 0:
+		return "never"
+	case d%(24*time.Hour) == 0:
+		return fmt.Sprintf("%d days", int(d/(24*time.Hour)))
+	default:
+		return d.String()
+	}
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {

@@ -1,7 +1,8 @@
 # hop
 
 Short links and pastes in one small Go binary. SQLite for storage, a bearer
-token for writes, a two-command CLI, no JavaScript anywhere.
+token for writes, a two-command CLI, a tiny dependency-free UI on the two
+landing pages, and no JavaScript in the paste view.
 
 ```
 https://go.example/k8s          -> 302 to wherever you pointed it
@@ -12,6 +13,20 @@ I wrote it because I wanted a URL shortener and a paste bin that I actually
 own, that fit in ~30 MB of RAM next to everything else on a small VPS, and
 that I could drive from a terminal. It is deployed at `go.divyam.top` /
 `paste.divyam.top` from a GitOps repo; this repo is the app.
+
+## Using hop
+
+Three ways, all talking to the same API. Reading a link or a paste never needs
+anything; creating one needs the write token (`HOP_TOKEN`).
+
+- **In the browser** — open `https://go.divyam.top/` or `https://paste.divyam.top/`,
+  paste the token once (it stays in that browser's `localStorage` and is only sent
+  to that origin), then create links / pastes, copy URLs, see your list, delete.
+- **From a terminal** — `hop link <url> [slug]`, `… | hop paste`, `hop paste file`
+  (see [CLI](#cli)), or two `curl` calls (see [HTTP API](#http-api)).
+- **From the GitOps repo that deploys it** — `make short URL=… [SLUG=…]` and
+  `make paste FILE=…` print the URL to share; the token is read over ssh from the
+  box (`/opt/voyager/secrets/hop.env`).
 
 ## Quick start
 

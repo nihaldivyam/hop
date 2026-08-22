@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hop — {{if eq .Kind "pastes"}}pastes{{else}}short links{{end}}</title>
-<link rel="stylesheet" href="/static/style.css">
+<meta name="description" content="hop: short links and pastes in one small Go binary. {{if eq .Kind "pastes"}}paste.{{else}}go.{{end}}divyam.top">
+<link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
 </head>
-<body>
+<body data-kind="{{.Kind}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}">
 <header class="sitenav" role="banner">
   <a class="sitenav-brand" href="https://divyam.top/">Divyam Azad</a>
   <nav class="sitenav-links" aria-label="Site">
@@ -21,14 +22,147 @@
     <a href="https://github.com/nihaldivyam" rel="me">GitHub</a>
   </nav>
 </header>
+
 <main class="landing">
-  <h1>hop</h1>
-  {{if eq .Kind "pastes"}}
-  <p>This host serves <strong>pastes</strong>: <code>https://{{.PasteHost}}/&lt;id&gt;</code> (text), <code>/&lt;id&gt;/raw</code>, or open it in a browser for a numbered view.</p>
-  {{else}}
-  <p>This host serves <strong>short links</strong>: <code>https://{{.LinksHost}}/&lt;slug&gt;</code> redirects somewhere. There is nothing else to see here.</p>
-  {{end}}
-  <p class="muted">Creating links and pastes needs a token; the public side is read-only and lightly rate-limited. Source: <a href="{{.Repo}}">{{.Repo}}</a></p>
+
+  <section class="hero">
+    <p class="eyebrow">hop · {{if eq .Kind "pastes"}}pastes{{else}}short links{{end}}</p>
+    <h1>{{if eq .Kind "pastes"}}Pastes{{else}}Short links{{end}} <span class="dim">&amp; {{if eq .Kind "pastes"}}short links{{else}}pastes{{end}}, one small tool</span></h1>
+    {{if eq .Kind "pastes"}}
+    <p class="lead"><code>https://{{.PasteHost}}/&lt;id&gt;</code> serves a piece of text — plain text for <code>curl</code>, a numbered view in a browser (<code>/&lt;id&gt;/raw</code> is always raw). Pastes are up to {{.MaxPaste}} and expire after {{.DefaultTTL}} unless you say otherwise.</p>
+    <p class="lead sub">Need a short link instead? <a href="https://{{.LinksHost}}/">{{.LinksHost}}</a></p>
+    {{else}}
+    <p class="lead"><code>https://{{.LinksHost}}/&lt;slug&gt;</code> redirects to a long URL you chose. Slugs can be yours (<code>/k8s</code>) or random (<code>/Xk3Pq</code>); visits are counted.</p>
+    <p class="lead sub">Need to share text instead? <a href="https://{{.PasteHost}}/">{{.PasteHost}}</a></p>
+    {{end}}
+  </section>
+
+  <section class="how" aria-labelledby="how-h">
+    <h2 id="how-h">How it works</h2>
+    <ol class="steps">
+      <li><span class="n">1</span><strong>Unlock</strong><span>Paste your token below once — it stays in this browser and is only ever sent to this site.</span></li>
+      <li><span class="n">2</span><strong>Create</strong><span>{{if eq .Kind "pastes"}}Type or drop text, pick a language and how long it should live.{{else}}Give it a URL, optionally a slug and an expiry.{{end}}</span></li>
+      <li><span class="n">3</span><strong>Share</strong><span>Copy the URL. Reading is public (and lightly rate-limited); only writing needs the token.</span></li>
+    </ol>
+  </section>
+
+  <section class="app" id="app" aria-labelledby="app-h">
+    <h2 id="app-h">{{if eq .Kind "pastes"}}Create a paste{{else}}Create a short link{{end}} in the browser</h2>
+    {{if not .WritesEnabled}}<p class="flash err">Writes are disabled on this instance (no token configured).</p>{{end}}
+    <noscript><p class="flash">This small UI needs JavaScript. Without it, use the terminal commands below — everything works through the API.</p></noscript>
+
+    <div class="card" id="token-card">
+      <div class="row">
+        <label class="grow">Token
+          <input type="password" id="token" autocomplete="off" spellcheck="false" placeholder="paste the write token">
+        </label>
+        <button type="button" class="btn" id="unlock">Unlock</button>
+        <button type="button" class="btn ghost hidden" id="forget">Forget</button>
+      </div>
+      <p class="muted small" id="token-status">Locked. The token is the <code>HOP_TOKEN</code> value — see “Where is my token” below.</p>
+    </div>
+
+    {{if eq .Kind "pastes"}}
+    <form class="card hidden" id="create-form" autocomplete="off">
+      <div class="row">
+        <label class="grow">Title <input type="text" id="p-title" maxlength="120" placeholder="optional, e.g. error.log"></label>
+        <label>Language
+          <select id="p-lang">
+            <option value="">text</option><option>bash</option><option>go</option><option>yaml</option><option>json</option><option>md</option><option>py</option><option>js</option><option>ts</option><option>toml</option><option>dockerfile</option><option>sql</option><option>log</option><option>diff</option>
+          </select>
+        </label>
+        <label>Expires
+          <select id="p-ttl">
+            <option value="">default ({{.DefaultTTL}})</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="365d">1 year</option><option value="0">never</option>
+          </select>
+        </label>
+      </div>
+      <label>Content <textarea id="p-content" rows="12" spellcheck="false" placeholder="paste or type here…"></textarea></label>
+      <div class="row end"><span class="muted small" id="p-size">0 B</span><button type="submit" class="btn">Create paste</button></div>
+      <p class="flash err hidden" id="create-error"></p>
+    </form>
+    {{else}}
+    <form class="card hidden" id="create-form" autocomplete="off">
+      <label>Long URL <input type="url" id="l-url" required placeholder="https://…"></label>
+      <div class="row">
+        <label class="grow">Slug <input type="text" id="l-slug" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="optional, e.g. k8s (random if empty)"></label>
+        <label>Expires
+          <select id="l-ttl">
+            <option value="">never</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="365d">1 year</option>
+          </select>
+        </label>
+      </div>
+      <div class="row end"><button type="submit" class="btn">Create short link</button></div>
+      <p class="flash err hidden" id="create-error"></p>
+    </form>
+    {{end}}
+
+    <div class="card ok hidden" id="result-card">
+      <p class="muted small">Ready to share</p>
+      <div class="row">
+        <a class="grow result-url" id="result-url" href="#" target="_blank" rel="noopener"></a>
+        <button type="button" class="btn" id="copy-result">Copy</button>
+      </div>
+      <p class="muted small" id="result-meta"></p>
+    </div>
+
+    <div class="card hidden" id="list-card">
+      <div class="row between">
+        <h3 id="list-title">{{if eq .Kind "pastes"}}Your pastes{{else}}Your links{{end}}</h3>
+        <button type="button" class="btn ghost" id="refresh">Refresh</button>
+      </div>
+      <div class="tablewrap">
+        <table id="list">
+          <thead>
+            {{if eq .Kind "pastes"}}<tr><th>Title / id</th><th>Lang</th><th>Size</th><th>Created</th><th>Expires</th><th></th></tr>
+            {{else}}<tr><th>Slug</th><th>Target</th><th>Hits</th><th>Expires</th><th></th></tr>{{end}}
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted small" id="list-empty">Nothing yet.</p>
+    </div>
+  </section>
+
+  <section class="terminal" aria-labelledby="term-h">
+    <h2 id="term-h">From the terminal</h2>
+    <div class="cols">
+      <div class="card">
+        <h3>From the voyager repo</h3>
+<pre><code>make short URL=https://kubernetes.io/docs/ SLUG=k8s
+make short URL=https://example.com/very/long/path
+make paste FILE=notes.md</code></pre>
+        <p class="muted small">Each prints the URL to share. The token is read over ssh from the box.</p>
+      </div>
+      <div class="card">
+        <h3>The hop CLI</h3>
+<pre><code>export HOP_API=https://{{.LinksHost}}
+hop login                       # stores the token locally
+hop link https://example.com/docs k8s
+cat error.log | hop paste
+HOP_TTL=1d hop paste secrets.txt</code></pre>
+        <p class="muted small">The same binary is the client (<code>go build</code> in the repo).</p>
+      </div>
+      <div class="card">
+        <h3>Plain curl</h3>
+<pre><code>curl -sS -H "Authorization: Bearer $HOP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://kubernetes.io/docs/","slug":"k8s"}' \
+  https://{{.LinksHost}}/api/links
+
+curl -sS -H "Authorization: Bearer $HOP_TOKEN" \
+  -H "X-Title: notes.md" -H "X-TTL: 7d" \
+  --data-binary @notes.md https://{{.PasteHost}}/api/pastes</code></pre>
+      </div>
+    </div>
+    <p class="muted"><strong>Where is my token?</strong> On the box: <code>/opt/voyager/secrets/hop.env</code> (<code>make hop-token</code> in the voyager repo prints it). Reading a link or a paste never needs it.</p>
+  </section>
+
+  <footer class="foot">
+    <p><a href="{{.Repo}}">hop source</a> · reads are public &amp; rate-limited, writes need the token, pastes expire · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
+  </footer>
+
 </main>
+<script src="/static/app.js?v={{.AssetVer}}"></script>
 </body>
 </html>

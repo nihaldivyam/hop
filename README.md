@@ -88,6 +88,39 @@ hop link https://example.com | pbcopy       # only the URL is printed, so this j
 
 Errors go to stderr with a non-zero exit; only the created URL goes to stdout.
 
+## Accounts (sign in with Zitadel)
+
+Set `OIDC_CLIENT_ID` (+ `OIDC_ISSUER`) and hop grows user accounts on both hosts:
+**Sign in / Sign up** in the header (an OIDC authorization-code + PKCE flow against
+the identity provider — Zitadel at `accounts.divyam.top` in production, which also
+handles registration, email verification, passkeys and MFA), an encrypted session
+cookie, **your own links and pastes** (created while signed in they carry your
+subject; the lists, deletes and `hop ls` show only yours), **per-user API tokens**
+(`/account` → create; `hop login --token hop_u_…`; `Authorization: Bearer hop_u_…`
+— shown once, stored hashed, revocable, act as you and respect your plan) and
+**plan-based limits** fetched from the billing service. With `OIDC_CLIENT_ID` empty
+nothing changes — owner token and anonymous modes work exactly as before.
+
+Routes (both hosts): `GET /login` (`?next=/path`), `GET /auth/callback`, `GET /logout`
+(RP-initiated logout at the IdP), `GET /me` (JSON), `GET /account` (HTML), `GET|POST
+/api/tokens`, `DELETE /api/tokens/{id}`. Cookie-authenticated writes from the browser
+must carry `X-Requested-With: hop` (the UI does); API tokens never need it.
+
+| plan | pastes up to | lifetime | links | rate | items |
+|---|---|---|---|---|---|
+| anonymous | HOP_ANON_* caps | ≤ 24 h / 7 d | random slug, confirmation page | HOP_ANON_*_RATE | — |
+| **free** (signed in) | 256 KiB | ≤ 30 d | custom slugs, direct redirect, ≤ 30 d | 30 / h | 500 |
+| **pro** | 1 MiB | forever allowed | forever allowed | 300 / h | 10 000 |
+| owner token | instance limits | any | any | none | — |
+
+Env: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (optional), `OIDC_REDIRECT_URLS`
+(comma list, one `…/auth/callback` per host; the one matching the request host is used),
+`HOP_SESSION_SECRET` (random-and-logged if empty — set it, or sessions die on restart),
+`HOP_COOKIE_DOMAIN` (e.g. `divyam.top`: one sign-in for both hosts), `BILLING_URL` +
+`BILLING_INTERNAL_TOKEN` (`GET /internal/entitlements/{sub}` → `{"plan":"free"|"pro"}`,
+cached 5 min, "free" on error/unset), `HOP_BILLING_ACCOUNT_URL` (the upgrade link).
+Discovery is retried in the background, so a slow IdP never blocks links and pastes.
+
 ## Paste view
 
 Opening a paste in a browser (`/{id}`, `/{id}.{ext}`, or `?html=1`) renders it
@@ -147,6 +180,12 @@ Expired rows stop being served immediately and are deleted by a janitor every
 | `HOP_DEFAULT_PASTE_TTL` | `30d` | default paste lifetime (`0` = forever) |
 | `HOP_REPO_URL` | this repo | link shown on the landing pages |
 | `HOP_TRUST_PROXY` | `true` | use `X-Forwarded-For` for the per-IP rate limit |
+| `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | *(empty — accounts off)* | sign in through an OIDC provider (see Accounts) |
+| `OIDC_REDIRECT_URLS` | *(derived)* | comma list of `https://<host>/auth/callback` |
+| `HOP_SESSION_SECRET` | *(random)* | encrypts the session cookie |
+| `HOP_COOKIE_DOMAIN` | *(host only)* | share the session across hosts, e.g. `divyam.top` |
+| `BILLING_URL` / `BILLING_INTERNAL_TOKEN` | *(empty — everyone is "free")* | plan lookups |
+| `HOP_BILLING_ACCOUNT_URL` | `https://billing.divyam.top/account` | upgrade link on `/account` |
 | `HOP_PUBLIC_PASTES` | `false` | accept anonymous pastes (paste host only, see below) |
 | `HOP_ANON_MAX_BYTES` | `32768` | size cap for anonymous pastes (→ `413`) |
 | `HOP_ANON_MAX_TTL` | `24h` | anonymous pastes always expire; longer/`0` requests are clamped |

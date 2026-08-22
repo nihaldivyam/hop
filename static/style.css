@@ -105,3 +105,17 @@ td.actions .btn { margin-left: .3rem; }
 .custom-id input:invalid { outline: 2px solid hsl(0,70%,55%); }
 .create .hero h1 .free { font-size: .8em; background: var(--card); padding: .1em .4em; border-radius: 8px; color: var(--acc); }
 .create .hero .eyebrow a { color: inherit; }
+
+/* accounts: header user area, plan pill, account page */
+.sitenav-user { display: flex; align-items: center; gap: 12px; margin-left: auto; font-size: 14px; }
+.sitenav-user a { color: hsl(0,0%,84%); text-decoration: none; }
+.sitenav-user a:hover { color: var(--acc); }
+.sitenav-user .sitenav-acct { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sitenav-user .sitenav-cta { border: 1px solid var(--acc); color: var(--acc); border-radius: 999px; padding: 2px 10px; }
+.sitenav-user .sitenav-cta:hover { background: var(--acc); color: hsl(0,0%,7%); }
+.plan-pill { display: inline-block; border: 1px solid hsla(45,100%,72%,.45); color: var(--acc); border-radius: 999px; padding: 0 .5em; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; vertical-align: middle; }
+.plan-pill.big { font-size: .85rem; padding: .1em .7em; }
+table.plan { width: auto; }
+table.plan th { text-align: left; font-weight: 500; text-transform: none; letter-spacing: 0; font-size: .9rem; color: var(--muted); padding-right: 1.5rem; }
+.account .hero h1 .dim { font-size: .6em; display: block; }
+@media (max-width: 580px) { .sitenav-user { margin-left: 0; width: 100%; justify-content: flex-end; } }

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Account — hop</title>
+<link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
+</head>
+<body data-kind="{{.Kind}}" data-page="account" data-user="{{.User.Email}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}">
+{{template "sitenav" .}}
+<main class="landing account">
+  <section class="hero">
+    <p class="eyebrow">hop · account</p>
+    <h1>{{if .User.Name}}{{.User.Name}}{{else}}Your account{{end}} <span class="dim">{{.User.Email}}</span></h1>
+    <p class="lead">Signed in through <a href="https://accounts.divyam.top/">accounts.divyam.top</a>. Links and pastes you create on <a href="https://{{.LinksHost}}/">{{.LinksHost}}</a> and <a href="https://{{.PasteHost}}/">{{.PasteHost}}</a> are yours: listed, deletable, and counted against your plan.</p>
+  </section>
+
+  <section aria-labelledby="plan-h">
+    <h2 id="plan-h">Plan: <span class="plan-pill big">{{.User.Plan}}</span></h2>
+    <div class="card">
+      <table class="plan">
+        <tr><th>Pastes up to</th><td>{{.User.MaxPaste}}</td></tr>
+        <tr><th>Lifetime</th><td>{{if .User.Forever}}up to forever (you choose){{else}}up to {{.User.MaxTTL}}{{end}}</td></tr>
+        <tr><th>Custom paste names &amp; link slugs</th><td>yes</td></tr>
+        <tr><th>Redirects</th><td>direct (no confirmation page)</td></tr>
+        <tr><th>Rate</th><td>{{.User.Limits.RatePerHour}} creates / hour</td></tr>
+        <tr><th>Items</th><td>up to {{.User.Limits.MaxItems}} links + pastes</td></tr>
+      </table>
+      {{if ne .User.Plan "pro"}}<p class="muted small">Need more? <a href="{{.BillingURL}}">Upgrade to Pro</a> — 1 MiB pastes, permanent links and pastes, higher rate limits, 10 000 items.</p>{{else}}<p class="muted small">Thanks for supporting hop. Manage billing at <a href="{{.BillingURL}}">{{.BillingURL}}</a>.</p>{{end}}
+    </div>
+  </section>
+
+  <section aria-labelledby="tok-h">
+    <h2 id="tok-h">API tokens</h2>
+    <p class="muted">Use a token instead of signing in: <code>hop login --token hop_u_…</code>, or <code>Authorization: Bearer hop_u_…</code> with the <a href="{{.Repo}}#http-api">HTTP API</a>. Tokens act as you and respect your plan; they are shown once.</p>
+    <div class="card">
+      <form class="row" id="token-form" autocomplete="off">
+        <label class="grow">Name <input type="text" id="tok-name" maxlength="60" placeholder="laptop, CI, …"></label>
+        <button type="submit" class="btn">Create token</button>
+      </form>
+      <p class="flash err hidden" id="tok-error"></p>
+      <div class="card ok hidden" id="tok-new">
+        <p class="muted small">Copy it now — it will not be shown again.</p>
+        <div class="row"><code class="grow result-url" id="tok-value"></code><button type="button" class="btn" id="tok-copy">Copy</button></div>
+      </div>
+      <div class="tablewrap">
+        <table id="tok-list">
+          <thead><tr><th>Name</th><th>Id</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+          <tbody>
+          {{range .Tokens}}<tr data-id="{{.ID}}"><td>{{.Name}}</td><td class="dim">{{.ID}}</td><td class="dim">{{.CreatedAt.Format "2006-01-02"}}</td><td class="dim">{{if .LastUsed}}{{.LastUsed.Format "2006-01-02 15:04"}}{{else}}never{{end}}</td><td class="actions"><button type="button" class="btn small danger tok-revoke" data-id="{{.ID}}">Revoke</button></td></tr>{{end}}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small{{if .Tokens}} hidden{{end}}" id="tok-empty">No tokens yet.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="data-h">
+    <h2 id="data-h">Your data</h2>
+    <div class="card">
+      <p class="muted">See and delete your links at <a href="https://{{.LinksHost}}/">{{.LinksHost}}</a> and your pastes at <a href="https://{{.PasteHost}}/">{{.PasteHost}}</a> (the lists under the forms show yours while signed in). Profile, password and passkeys live at <a href="https://accounts.divyam.top/ui/console/users/me">accounts.divyam.top</a>. To delete the account, remove your links/pastes here and your user there.</p>
+      <p><a class="btn ghost" href="/logout">Sign out</a></p>
+    </div>
+  </section>
+
+  <footer class="foot"><p><a href="{{.Repo}}">hop source</a> · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p></footer>
+</main>
+<script src="/static/app.js?v={{.AssetVer}}"></script>
+</body>
+</html>

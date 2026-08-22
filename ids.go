@@ -31,6 +31,7 @@ var reserved = map[string]bool{
 	"api": true, "healthz": true, "static": true, "raw": true, "go": true,
 	"favicon.ico": true, "robots.txt": true, "p": true, "admin": true,
 	"sitemap.xml": true, "security.txt": true, "well-known": true, ".well-known": true,
+	"login": true, "logout": true, "auth": true, "me": true, "account": true, "signup": true, "signin": true,
 }
 
 func validSlug(s string) bool { return slugRe.MatchString(s) && !reserved[s] }

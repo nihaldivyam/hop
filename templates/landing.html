@@ -7,21 +7,8 @@
 <meta name="description" content="hop: short links and pastes in one small Go binary. {{if eq .Kind "pastes"}}paste.{{else}}go.{{end}}divyam.top">
 <link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
 </head>
-<body data-kind="{{.Kind}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}"{{if .PublicPastes}} data-public-pastes="1" data-anon-max-bytes="{{.AnonMaxBytes}}" data-anon-ttl="{{.AnonTTL}}"{{end}}{{if .PublicLinks}} data-public-links="1" data-anon-link-ttl="{{.AnonLinkTTL}}"{{end}}>
-<header class="sitenav" role="banner">
-  <a class="sitenav-brand" href="https://divyam.top/">Divyam Azad</a>
-  <nav class="sitenav-links" aria-label="Site">
-    <a href="https://divyam.top/#about">About</a>
-    <a href="https://divyam.top/#resume">Resume</a>
-    <a href="https://divyam.top/#portfolio">Portfolio</a>
-    <a href="https://divyam.top/#contact">Contact</a>
-    <a href="https://divyam.top/blog/">Blog</a>
-    <a href="https://divyam.top/control/">Control</a>
-    <a href="https://status.divyam.top/">Status</a>
-    <a href="https://security.divyam.top/">Security</a>
-    <a href="https://github.com/nihaldivyam" rel="me">GitHub</a>
-  </nav>
-</header>
+<body data-kind="{{.Kind}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}"{{if .User}} data-user="{{.User.Email}}" data-plan="{{.User.Plan}}" data-plan-max-bytes="{{.User.Limits.MaxPasteBytes}}" data-plan-forever="{{if .User.Forever}}1{{else}}0{{end}}"{{end}}{{if .PublicPastes}} data-public-pastes="1" data-anon-max-bytes="{{.AnonMaxBytes}}" data-anon-ttl="{{.AnonTTL}}"{{end}}{{if .PublicLinks}} data-public-links="1" data-anon-link-ttl="{{.AnonLinkTTL}}"{{end}}>
+{{template "sitenav" .}}
 
 <main class="landing">
 
@@ -40,7 +27,11 @@
   <section class="how" aria-labelledby="how-h">
     <h2 id="how-h">How it works</h2>
     <ol class="steps">
-      {{if .PublicPastes}}
+      {{if .User}}
+      <li><span class="n">1</span><strong>Create</strong><span>You are signed in as {{.User.Email}} — {{if eq .Kind "pastes"}}paste text below (up to {{.User.MaxPaste}}, kept {{if .User.Forever}}as long as you like{{else}}up to {{.User.MaxTTL}}{{end}}){{else}}shorten a URL below (custom slug, direct redirect, {{if .User.Forever}}any lifetime{{else}}up to {{.User.MaxTTL}}{{end}}){{end}}.</span></li>
+      <li><span class="n">2</span><strong>Share</strong><span>Copy the URL. Your {{.Kind}} are listed below; delete them any time.</span></li>
+      <li><span class="n">3</span><strong>Automate</strong><span>Make an <a href="/account">API token</a> for the CLI and scripts — it respects your {{.User.Plan}} plan.</span></li>
+      {{else if .PublicPastes}}
       <li><span class="n">1</span><strong>Write</strong><span>Type or drop text below — no account, no token. Anonymous pastes are capped at {{.AnonMax}} and expire after {{.AnonTTL}}.</span></li>
       <li><span class="n">2</span><strong>Share</strong><span>Copy the URL. Reading is public (and lightly rate-limited).</span></li>
       <li><span class="n">3</span><strong>Unlock (optional)</strong><span>With the write token you get {{.MaxPaste}}, {{.DefaultTTL}} or forever, a list of your pastes and delete.</span></li>
@@ -61,7 +52,7 @@
     {{if and (not .WritesEnabled) (not .Public)}}<p class="flash err">Writes are disabled on this instance (no token configured).</p>{{end}}
     <noscript><p class="flash">This small UI needs JavaScript. Without it, use the terminal commands below — everything works through the API.</p></noscript>
 
-    {{if not .Public}}
+    {{if and (not .Public) (not .User)}}
     <div class="card" id="token-card">
       <div class="row">
         <label class="grow">Token
@@ -77,22 +68,23 @@
     {{if eq .Kind "pastes"}}
     {{template "paste-form" .}}
     {{else}}
-    <form class="card{{if not .PublicLinks}} hidden{{end}}" id="create-form" autocomplete="off">
-      {{if .PublicLinks}}<p class="badge" id="anon-badge">Anonymous — random slug, expires in {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, opens a confirmation page first{{end}}.</p>{{end}}
+    <form class="card{{if and (not .PublicLinks) (not .User)}} hidden{{end}}" id="create-form" autocomplete="off">
+      {{if .User}}<p class="badge" id="user-badge">Signed in · {{.User.Plan}} plan — custom slugs, direct redirect, {{if .User.Forever}}any lifetime{{else}}links live up to {{.User.MaxTTL}}{{end}}.</p>{{end}}
+      {{if .PublicLinks}}<p class="badge{{if .User}} hidden{{end}}" id="anon-badge">Anonymous — random slug, expires in {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, opens a confirmation page first{{end}}.</p>{{end}}
       <label>Long URL <input type="url" id="l-url" required placeholder="https://…"></label>
       <div class="row">
-        <label class="grow{{if .PublicLinks}} hidden{{end}}" id="l-slug-wrap">Slug <input type="text" id="l-slug" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="optional, e.g. k8s (random if empty)"></label>
-        <label id="l-ttl-wrap"{{if .PublicLinks}} class="hidden"{{end}}>Expires
+        <label class="grow{{if and .PublicLinks (not .User)}} hidden{{end}}" id="l-slug-wrap">Slug <input type="text" id="l-slug" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="optional, e.g. k8s (random if empty)"></label>
+        <label id="l-ttl-wrap"{{if and .PublicLinks (not .User)}} class="hidden"{{end}}>Expires
           <select id="l-ttl">
-            <option value="">never</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="365d">1 year</option>
+            {{if or (not .User) .User.Forever}}<option value="">never</option>{{end}}<option value="1d">1 day</option><option value="7d">7 days</option><option value="30d"{{if and .User (not .User.Forever)}} selected{{end}}>30 days</option>{{if or (not .User) .User.Forever}}<option value="365d">1 year</option>{{end}}
           </select>
         </label>
-        {{if .PublicLinks}}<p class="anon-note" id="l-anon-note">Custom slugs, longer or permanent links and a direct redirect need the write token. Anonymous links expire in {{.AnonLinkTTL}}.</p>{{end}}
+        {{if .PublicLinks}}<p class="anon-note{{if .User}} hidden{{end}}" id="l-anon-note">Custom slugs, longer or permanent links and a direct redirect need the write token. Anonymous links expire in {{.AnonLinkTTL}}.</p>{{end}}
       </div>
       <div class="row end"><button type="submit" class="btn">Create short link</button></div>
       <p class="flash err hidden" id="create-error"></p>
     </form>
-    {{if .PublicLinks}}
+    {{if and .PublicLinks (not .User)}}
     <details class="card token-details" id="token-details">
       <summary>Have the write token? Unlock for custom slugs, longer or permanent links without the confirmation page, list &amp; delete.</summary>
       <div id="token-card">
@@ -143,7 +135,7 @@ curl -sS -H "Authorization: Bearer $HOP_TOKEN" \
   --data-binary @notes.md https://{{.PasteHost}}/api/pastes</code></pre>
       </div>
     </div>
-    <p class="muted"><strong>Where is my token?</strong> On the box: <code>/opt/voyager/secrets/hop.env</code> (<code>make hop-token</code> in the voyager repo prints it). Reading a link or a paste never needs it.</p>
+    <p class="muted"><strong>Where is my token?</strong> {{if .Accounts}}Signed-in users make their own on the <a href="/account">account page</a> (<code>hop login --token hop_u_…</code>). The instance owner's token lives on the box: <code>/opt/voyager/secrets/hop.env</code>.{{else}}On the box: <code>/opt/voyager/secrets/hop.env</code> (<code>make hop-token</code> in the voyager repo prints it).{{end}} Reading a link or a paste never needs it.</p>
   </section>
 
   <footer class="foot">

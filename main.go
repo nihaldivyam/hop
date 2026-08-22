@@ -31,9 +31,11 @@ func main() {
 	defer stop()
 	go st.janitor(ctx, 10*time.Minute)
 
+	hs := newServer(cfg, st)
+	hs.Start(ctx)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           newServer(cfg, st),
+		Handler:           hs,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -46,8 +48,8 @@ func main() {
 		defer cancel()
 		srv.Shutdown(sctx)
 	}()
-	log.Printf("hop %s listening on %s (links=%s pastes=%s db=%s writes=%v)",
-		version, cfg.Listen, cfg.LinksHost, cfg.PasteHost, cfg.DBPath, cfg.Token != "")
+	log.Printf("hop %s listening on %s (links=%s pastes=%s db=%s writes=%v %s)",
+		version, cfg.Listen, cfg.LinksHost, cfg.PasteHost, cfg.DBPath, cfg.Token != "", hs.accounts)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

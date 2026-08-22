@@ -3,18 +3,45 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{if .P.Title}}{{.P.Title}}{{else}}paste {{.P.ID}}{{end}} — hop</title>
-<link rel="stylesheet" href="/static/style.css">
+<meta name="robots" content="noindex">
+<title>{{if .Title}}{{.Title}}{{else}}paste {{.ID}}{{end}} — hop</title>
+<link rel="stylesheet" href="/static/paste.css">
 </head>
 <body>
-<header class="bar">
-  <span class="title">{{if .P.Title}}{{.P.Title}}{{else}}{{.P.ID}}{{end}}</span>
-  <span class="meta">{{if .Lang}}<span class="tag">{{.Lang}}</span>{{end}} {{.Size}} · {{.P.CreatedAt.Format "2006-01-02 15:04 UTC"}}{{if .P.ExpiresAt}} · expires {{.P.ExpiresAt.Format "2006-01-02"}}{{end}} · <a href="{{.RawURL}}">raw</a></span>
+<header class="sitenav" role="banner">
+  <a class="sitenav-brand" href="https://divyam.top/">Divyam Azad</a>
+  <nav class="sitenav-links" aria-label="Site">
+    <a href="https://divyam.top/#about">About</a>
+    <a href="https://divyam.top/#resume">Resume</a>
+    <a href="https://divyam.top/#portfolio">Portfolio</a>
+    <a href="https://divyam.top/#contact">Contact</a>
+    <a href="https://divyam.top/blog/">Blog</a>
+    <a href="https://divyam.top/control/">Control</a>
+    <a href="https://status.divyam.top/">Status</a>
+    <a href="https://security.divyam.top/">Security</a>
+    <a href="https://github.com/nihaldivyam" rel="me">GitHub</a>
+  </nav>
 </header>
-<main>
-<ol class="lines">{{range .Lines}}<li><span>{{.}}</span></li>
-{{end}}</ol>
+<main class="paste">
+  <input type="checkbox" id="wrap" class="sr">
+  <div class="bar">
+    <div class="bar-left">
+      <span class="title">{{if .Title}}{{.Title}}{{else}}paste {{.ID}}{{end}}</span>
+      <span class="tag">{{.Lang}}</span>
+      <span class="meta">{{.Size}} · {{.Lines}} lines · {{.Created}} · expires {{.Expires}}</span>
+    </div>
+    <div class="bar-right">
+      <a class="btn" href="{{.RawURL}}">Raw</a>
+      <a class="btn" href="{{.DownloadURL}}" download>Download</a>
+      <label class="btn wrap-btn" for="wrap" title="toggle line wrapping">Wrap</label>
+    </div>
+  </div>
+  <div class="code" tabindex="0">{{.Code}}</div>
+  <details class="plain">
+    <summary>Plain text — click inside, select all, copy</summary>
+    <textarea readonly rows="{{.PlainRows}}" spellcheck="false">{{.Plain}}</textarea>
+  </details>
 </main>
-<footer class="muted">hop · <a href="{{.Repo}}">source</a></footer>
+<footer class="foot">hop · <a href="{{.Repo}}">source</a> · this view is server-rendered, no scripts</footer>
 </body>
 </html>

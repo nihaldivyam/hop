@@ -80,7 +80,7 @@ hop link https://example.com | pbcopy       # only the URL is printed, so this j
 | `hop login [--api URL] [--token T]` | remember the API URL and token (prompts for what's missing) |
 | `hop logout` / `hop whoami` | forget them / show them (token masked) |
 | `hop link <url> [slug] [--ttl 30d]` | create a short link → prints the short URL |
-| `hop paste [file] [--title T] [--lang L] [--ttl 7d]` | paste a file or stdin → prints the URL |
+| `hop paste [file] [--title T] [--lang L] [--ttl 7d] [--id NAME]` | paste a file or stdin → prints the URL (`--id`: name your own URL) |
 | `hop ls [links\|pastes]` | list what exists (slug/hits/expiry/target, id/title/size) |
 | `hop rm <slug-or-id> [--link\|--paste]` | delete (auto-detects) |
 | `hop open <slug-or-id> [-b]` | print the public URL (`-b` opens it in the browser) |
@@ -115,7 +115,7 @@ and [Anonymous short links](#anonymous-short-links)). Reads are anonymous.
 | `GET` | `/api/links` | | list (non-expired; `anon`, and `ip` for anonymous links) |
 | `DELETE` | `/api/links/{slug}` | | `204` |
 | `DELETE` | `/api/links?anon=1` | | `200 {deleted}` — purge every anonymous link |
-| `POST` | `/api/pastes` | raw body (`text/*`, `application/octet-stream`) or multipart `file`/`content`; `X-Title`, `X-Lang`, `X-TTL` | `201 {id, url, raw_url, expires_at, size}` — `413` over the limit |
+| `POST` | `/api/pastes` | raw body (`text/*`, `application/octet-stream`) or multipart `file`/`content`; `X-Title`, `X-Lang`, `X-TTL`, optional `X-Id` (or `?id=`) to name the URL | `201 {id, url, raw_url, expires_at, size}` — `413` over the limit, `400` invalid id, `409` id taken |
 | `GET` | `/api/pastes` | | list without content (`anon`, and `ip` for anonymous pastes) |
 | `DELETE` | `/api/pastes/{id}` | | `204` |
 | `DELETE` | `/api/pastes?anon=1` | | `200 {deleted}` — purge every anonymous paste |
@@ -126,7 +126,9 @@ Public side — links host: `GET /{slug}` → `302`, hits and last-use recorded
 does the redirect — see [Anonymous short links](#anonymous-short-links)).
 Pastes host: `GET /{id}` → `text/plain`; `GET /{id}.{ext}`, `?html=1` or a
 browser `Accept: text/html` → a dark, numbered HTML view; `GET /{id}/raw` →
-always plain text. `GET /` on either host is a one-paragraph landing page.
+always plain text. A browser opening a *free* valid name (`GET /{name}`,
+`Accept: text/html`) gets a `200` editor that creates the paste at that name —
+see [Name your own paste URL](#name-your-own-paste-url); other clients get `404`. `GET /` on either host is a one-paragraph landing page.
 
 TTLs are Go durations plus `d` / `w` (`90m`, `36h`, `7d`, `2w`); `0` = never.
 Expired rows stop being served immediately and are deleted by a janitor every
@@ -157,6 +159,22 @@ Expired rows stop being served immediately and are deleted by a janitor every
 | `HOP_ANON_LINK_BURST` | `2` | burst allowed on top of `HOP_ANON_LINK_RATE` |
 | `HOP_ANON_LINK_DAILY_CAP` | `200` | global anonymous links per UTC day (→ `429 daily cap reached`) |
 | `HOP_ANON_LINK_INTERSTITIAL` | `true` | browsers see a confirmation page before an anonymous redirect |
+
+## Name your own paste URL
+
+Any free paste URL can be claimed directly: open `https://paste.divyam.top/<name>`
+in a browser and, if no paste lives there yet and the name is valid, you get an
+editor that saves **at exactly that URL** (the page POSTs to `/api/pastes` with
+`X-Id: <name>` and then navigates to the new paste). Names are **1–15 characters**,
+letters/digits/`-`/`_`, starting with a letter or digit, and must not be a reserved
+path (`api`, `raw`, `static`, `healthz`, `go`, `admin`, …); a taken name is `409`,
+an invalid one is a `404` page that states the rule. Other ways to name a paste:
+the **Custom URL** field on the landing page, `hop paste file --id my-notes`, or
+`curl -H "X-Id: my-notes" --data-binary @file https://paste.divyam.top/api/pastes`
+(`?id=my-notes` works too). Anonymous users may pick names under the usual anonymous
+limits (24 h expiry, size, rate limit), so squatted names free themselves; the token
+gives the full limits. Random ids stay 8-char base58. Names are not reserved for
+anyone — first come, first served until the paste expires.
 
 ## Anonymous pastes
 

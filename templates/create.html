@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{if .Invalid}}no such paste{{else}}{{.PasteHost}}/{{.CreateID}} is free{{end}} — hop</title>
+<link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
+</head>
+<body data-kind="pastes" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}"{{if .PublicPastes}} data-public-pastes="1" data-anon-max-bytes="{{.AnonMaxBytes}}" data-anon-ttl="{{.AnonTTL}}"{{end}}{{if not .Invalid}} data-create-id="{{.CreateID}}"{{end}}>
+<header class="sitenav" role="banner">
+  <a class="sitenav-brand" href="https://divyam.top/">Divyam Azad</a>
+  <nav class="sitenav-links" aria-label="Site">
+    <a href="https://divyam.top/#about">About</a>
+    <a href="https://divyam.top/#resume">Resume</a>
+    <a href="https://divyam.top/#portfolio">Portfolio</a>
+    <a href="https://divyam.top/#contact">Contact</a>
+    <a href="https://divyam.top/blog/">Blog</a>
+    <a href="https://divyam.top/control/">Control</a>
+    <a href="https://status.divyam.top/">Status</a>
+    <a href="https://security.divyam.top/">Security</a>
+    <a href="https://github.com/nihaldivyam" rel="me">GitHub</a>
+  </nav>
+</header>
+
+<main class="landing create">
+  <section class="hero">
+    <p class="eyebrow">hop · <a href="https://{{.PasteHost}}/">pastes</a></p>
+    {{if .Invalid}}
+    <h1>No such paste</h1>
+    <p class="lead"><code>{{.PasteHost}}/{{.CreateID}}</code> does not exist and cannot be created: names are {{.IDRule}}.</p>
+    <p class="lead sub">Pick another name, or start from <a href="https://{{.PasteHost}}/">{{.PasteHost}}</a>.</p>
+    {{else}}
+    <h1><code class="free">{{.PasteHost}}/{{.CreateID}}</code> <span class="dim">is free — write it</span></h1>
+    <p class="lead">Whatever you save below will live at exactly that URL.{{if .PublicPastes}} No account or token needed: anonymous pastes are text only, up to {{.AnonMax}}, and expire after {{.AnonTTL}} — unlock with the write token for {{.MaxPaste}}, {{.DefaultTTL}} or forever.{{else}} Creating needs the write token.{{end}}</p>
+    {{end}}
+  </section>
+
+  {{if not .Invalid}}
+  <section class="app" id="app" aria-labelledby="app-h">
+    <h2 id="app-h">Create this paste</h2>
+    {{if and (not .WritesEnabled) (not .PublicPastes)}}<p class="flash err">Writes are disabled on this instance (no token configured).</p>{{end}}
+    <noscript><p class="flash">This editor needs JavaScript. Without it, use the API:
+<code>curl -sS -H "X-Id: {{.CreateID}}" --data-binary @file https://{{.PasteHost}}/api/pastes</code>{{if not .PublicPastes}} (with <code>-H "Authorization: Bearer $HOP_TOKEN"</code>){{end}}.</p></noscript>
+    {{if not .PublicPastes}}
+    <div class="card" id="token-card">
+      <div class="row">
+        <label class="grow">Token
+          <input type="password" id="token" autocomplete="off" spellcheck="false" placeholder="paste the write token">
+        </label>
+        <button type="button" class="btn" id="unlock">Unlock</button>
+        <button type="button" class="btn ghost hidden" id="forget">Forget</button>
+      </div>
+      <p class="muted small" id="token-status">Locked. The token is the <code>HOP_TOKEN</code> value (<code>make hop-token</code> in the voyager repo).</p>
+    </div>
+    {{end}}
+    {{template "paste-form" .}}
+    {{template "result-list" .}}
+  </section>
+  {{end}}
+
+  <footer class="foot">
+    <p><a href="{{.Repo}}">hop source</a> · any free <code>{{.PasteHost}}/&lt;name&gt;</code> can be claimed this way (names: {{.IDRule}}){{if .PublicPastes}}; anonymous pastes expire in {{.AnonTTL}}, so names free up again{{end}} · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
+  </footer>
+</main>
+<script src="/static/app.js?v={{.AssetVer}}"></script>
+</body>
+</html>

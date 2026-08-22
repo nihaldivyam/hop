@@ -75,40 +75,7 @@
     {{end}}
 
     {{if eq .Kind "pastes"}}
-    <form class="card{{if not .PublicPastes}} hidden{{end}}" id="create-form" autocomplete="off">
-      {{if .PublicPastes}}<p class="badge" id="anon-badge">Anonymous — up to {{.AnonMax}}, expires in {{.AnonTTL}}. Text only.</p>{{end}}
-      <div class="row">
-        <label class="grow">Title <input type="text" id="p-title" maxlength="120" placeholder="optional, e.g. error.log"></label>
-        <label>Language
-          <select id="p-lang">
-            <option value="">text</option><option>bash</option><option>go</option><option>yaml</option><option>json</option><option>md</option><option>py</option><option>js</option><option>ts</option><option>toml</option><option>dockerfile</option><option>sql</option><option>log</option><option>diff</option>
-          </select>
-        </label>
-        <label id="p-ttl-wrap"{{if .PublicPastes}} class="hidden"{{end}}>Expires
-          <select id="p-ttl">
-            <option value="">default ({{.DefaultTTL}})</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="365d">1 year</option><option value="0">never</option>
-          </select>
-        </label>
-      </div>
-      <label>Content <textarea id="p-content" rows="12" spellcheck="false" placeholder="paste or type here…"></textarea></label>
-      <div class="row end"><span class="muted small" id="p-size">0 B</span><button type="submit" class="btn">Create paste</button></div>
-      <p class="flash err hidden" id="create-error"></p>
-    </form>
-    {{if .PublicPastes}}
-    <details class="card token-details" id="token-details">
-      <summary>Have the write token? Unlock for {{.MaxPaste}}, {{.DefaultTTL}} or forever, list &amp; delete.</summary>
-      <div id="token-card">
-        <div class="row">
-          <label class="grow">Token
-            <input type="password" id="token" autocomplete="off" spellcheck="false" placeholder="paste the write token">
-          </label>
-          <button type="button" class="btn" id="unlock">Unlock</button>
-          <button type="button" class="btn ghost hidden" id="forget">Forget</button>
-        </div>
-        <p class="muted small" id="token-status">Locked. The token is the <code>HOP_TOKEN</code> value — see “Where is my token” below.</p>
-      </div>
-    </details>
-    {{end}}
+    {{template "paste-form" .}}
     {{else}}
     <form class="card{{if not .PublicLinks}} hidden{{end}}" id="create-form" autocomplete="off">
       {{if .PublicLinks}}<p class="badge" id="anon-badge">Anonymous — random slug, expires in {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, opens a confirmation page first{{end}}.</p>{{end}}
@@ -142,31 +109,7 @@
     {{end}}
     {{end}}
 
-    <div class="card ok hidden" id="result-card">
-      <p class="muted small">Ready to share</p>
-      <div class="row">
-        <a class="grow result-url" id="result-url" href="#" target="_blank" rel="noopener"></a>
-        <button type="button" class="btn" id="copy-result">Copy</button>
-      </div>
-      <p class="muted small" id="result-meta"></p>
-    </div>
-
-    <div class="card hidden" id="list-card">
-      <div class="row between">
-        <h3 id="list-title">{{if eq .Kind "pastes"}}Your pastes{{else}}Your links{{end}}</h3>
-        <button type="button" class="btn ghost" id="refresh">Refresh</button>
-      </div>
-      <div class="tablewrap">
-        <table id="list">
-          <thead>
-            {{if eq .Kind "pastes"}}<tr><th>Title / id</th><th>Lang</th><th>Size</th><th>Created</th><th>Expires</th><th></th></tr>
-            {{else}}<tr><th>Slug</th><th>Target</th><th>Hits</th><th>Expires</th><th></th></tr>{{end}}
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <p class="muted small" id="list-empty">Nothing yet.</p>
-    </div>
+    {{template "result-list" .}}
   </section>
 
   <section class="terminal" aria-labelledby="term-h">

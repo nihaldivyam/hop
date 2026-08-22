@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"math/big"
 	"regexp"
+	"strings"
 )
 
 // base58: no 0/O/I/l, so slugs survive being read aloud or retyped.
@@ -27,8 +28,18 @@ var slugRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // reserved are path segments that can never be slugs or paste ids because the
 // router owns them.
 var reserved = map[string]bool{
-	"api": true, "healthz": true, "static": true, "raw": true,
+	"api": true, "healthz": true, "static": true, "raw": true, "go": true,
 	"favicon.ico": true, "robots.txt": true, "p": true, "admin": true,
+	"sitemap.xml": true, "security.txt": true, "well-known": true, ".well-known": true,
 }
 
 func validSlug(s string) bool { return slugRe.MatchString(s) && !reserved[s] }
+
+// Custom paste ids ("name your own URL"): 1–15 chars, letters/digits/-/_,
+// starting with a letter or digit. Random ids are 8-char base58 and can in
+// principle collide with a valid name; uniqueness is enforced by the store either way.
+var pasteIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$`)
+
+const pasteIDRule = "1-15 chars, letters/digits/-/_ (starting with a letter or digit), not a reserved name"
+
+func validPasteID(s string) bool { return pasteIDRe.MatchString(s) && !reserved[strings.ToLower(s)] }

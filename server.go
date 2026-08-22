@@ -162,25 +162,55 @@ func (s *Server) clientIP(r *http.Request) string {
 // stricter no-script policy in htmlHeaders.
 func (s *Server) landing(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
-		w.Header().Set("Cache-Control", "no-cache")
-		data := map[string]any{
-			"Kind": kind, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost, "PasteHost": s.cfg.PasteHost,
-			"MaxPaste": humanSize(s.cfg.MaxPasteBytes), "DefaultTTL": humanTTL(s.cfg.DefaultPasteTTL),
-			"AssetVer": s.assetVer, "WritesEnabled": s.cfg.Token != "",
-			// anonymous pastes (paste host only)
-			"PublicPastes": kind == "pastes" && s.cfg.PublicPastes,
-			"AnonMaxBytes": s.cfg.AnonMaxBytes, "AnonMax": humanSize(s.cfg.AnonMaxBytes),
-			"AnonTTL": humanDur(s.cfg.AnonMaxTTL), "AnonTTLRaw": s.cfg.AnonMaxTTL.String(),
-			// anonymous links (links host only)
-			"PublicLinks": kind == "links" && s.cfg.PublicLinks,
-			"AnonLinkTTL": humanDur(s.cfg.AnonLinkMaxTTL), "AnonLinkInterstitial": s.cfg.AnonLinkInterstitial,
-			"Public": (kind == "pastes" && s.cfg.PublicPastes) || (kind == "links" && s.cfg.PublicLinks),
-		}
-		if err := tmpl.ExecuteTemplate(w, "landing.html", data); err != nil {
+		s.uiHeaders(w)
+		if err := tmpl.ExecuteTemplate(w, "landing.html", s.pageData(kind)); err != nil {
 			log.Printf("landing: %v", err)
 		}
+	}
+}
+
+// uiHeaders: the headers for pages that carry the in-browser UI (landing and the
+// "create this paste" page): scripts/styles/fetch from 'self' only, never cached.
+func (s *Server) uiHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Cache-Control", "no-cache")
+}
+
+// pageData is the template data shared by the landing pages and the create page.
+func (s *Server) pageData(kind string) map[string]any {
+	return map[string]any{
+		"Kind": kind, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost, "PasteHost": s.cfg.PasteHost,
+		"MaxPaste": humanSize(s.cfg.MaxPasteBytes), "DefaultTTL": humanTTL(s.cfg.DefaultPasteTTL),
+		"AssetVer": s.assetVer, "WritesEnabled": s.cfg.Token != "",
+		// anonymous pastes (paste host only)
+		"PublicPastes": kind == "pastes" && s.cfg.PublicPastes,
+		"AnonMaxBytes": s.cfg.AnonMaxBytes, "AnonMax": humanSize(s.cfg.AnonMaxBytes),
+		"AnonTTL": humanDur(s.cfg.AnonMaxTTL), "AnonTTLRaw": s.cfg.AnonMaxTTL.String(),
+		// anonymous links (links host only)
+		"PublicLinks": kind == "links" && s.cfg.PublicLinks,
+		"AnonLinkTTL": humanDur(s.cfg.AnonLinkMaxTTL), "AnonLinkInterstitial": s.cfg.AnonLinkInterstitial,
+		"Public": (kind == "pastes" && s.cfg.PublicPastes) || (kind == "links" && s.cfg.PublicLinks),
+		// name-your-own-URL rules (paste host)
+		"IDRule": pasteIDRule, "IDPattern": pasteIDRe.String()[1 : len(pasteIDRe.String())-1],
+	}
+}
+
+// createPage is what a browser gets for GET /{name} on the paste host when no
+// such paste exists and the name is a valid custom id: a 200 editor that
+// creates the paste AT that name (app.js POSTs with X-Id and then navigates to
+// it). Invalid names get a 404 page with the rule. Non-browsers get plain 404.
+func (s *Server) createPage(w http.ResponseWriter, r *http.Request, name string) {
+	data := s.pageData("pastes")
+	data["CreateID"] = name
+	data["Invalid"] = !validPasteID(name)
+	s.uiHeaders(w)
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	if data["Invalid"] == true {
+		w.WriteHeader(http.StatusNotFound)
+	}
+	if err := tmpl.ExecuteTemplate(w, "create.html", data); err != nil {
+		log.Printf("create page: %v", err)
 	}
 }
 
@@ -326,6 +356,11 @@ func (s *Server) showPaste(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.st.GetPaste(r.Context(), id)
 	if errors.Is(err, errNotFound) {
+		// "name your own URL": a browser landing on a free name gets an editor for it
+		if ext == "" && strings.Contains(r.Header.Get("Accept"), "text/html") {
+			s.createPage(w, r, id)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -692,19 +727,39 @@ func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, anon bool, l
 		t := p.CreatedAt.Add(ttl)
 		p.ExpiresAt = &t
 	}
-	for attempt := 0; ; attempt++ {
-		p.ID = randomID(8)
-		err := s.st.CreatePaste(r.Context(), p)
-		if err == nil {
-			break
+	// optional custom id ("name your own URL"): X-Id header or ?id= query
+	custom := strings.TrimSpace(r.Header.Get("X-Id"))
+	if custom == "" {
+		custom = strings.TrimSpace(r.URL.Query().Get("id"))
+	}
+	if custom != "" {
+		if !validPasteID(custom) {
+			jsonErr(w, http.StatusBadRequest, "invalid id: "+pasteIDRule)
+			return
 		}
-		if !errors.Is(err, errExists) || attempt > 5 {
+		p.ID = custom
+		if err := s.st.CreatePaste(r.Context(), p); errors.Is(err, errExists) {
+			jsonErr(w, http.StatusConflict, "id taken")
+			return
+		} else if err != nil {
 			jsonErr(w, http.StatusInternalServerError, "storage error")
 			return
 		}
+	} else {
+		for attempt := 0; ; attempt++ {
+			p.ID = randomID(8)
+			err := s.st.CreatePaste(r.Context(), p)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, errExists) || attempt > 5 {
+				jsonErr(w, http.StatusInternalServerError, "storage error")
+				return
+			}
+		}
 	}
 	if anon {
-		log.Printf("anon paste id=%s ip=%s bytes=%d ttl=%s", p.ID, ip, p.Size, ttl)
+		log.Printf("anon paste id=%s ip=%s bytes=%d ttl=%s custom=%t", p.ID, ip, p.Size, ttl, custom != "")
 	}
 	base := "https://" + s.cfg.PasteHost + "/" + p.ID
 	writeJSON(w, http.StatusCreated, map[string]any{

@@ -86,6 +86,20 @@ hop link https://example.com | pbcopy       # only the URL is printed, so this j
 
 Errors go to stderr with a non-zero exit; only the created URL goes to stdout.
 
+## Paste view
+
+Opening a paste in a browser (`/{id}`, `/{id}.{ext}`, or `?html=1`) renders it
+server-side with [chroma](https://github.com/alecthomas/chroma): the language
+comes from `X-Lang`, the URL extension, the title's extension, or sniffing;
+lines are numbered and linkable (`#L12` highlights a line), there is a CSS-only
+**Wrap** toggle, **Raw** (`/{id}/raw`) and **Download** (`/{id}/raw?dl=1`, a
+safe filename derived from the title/language), and a collapsible plain-text box
+for select-all/copy. Pastes over 200 KiB or 5 000 lines are shown unhighlighted.
+The view stays under the strict CSP (`default-src 'none'; style-src 'self'` —
+class-based highlighting, no inline styles, no scripts); its stylesheet is
+`/static/paste.css`. Markdown pastes are highlighted as Markdown source, not
+rendered (no HTML passthrough, so nothing to sanitise).
+
 ## HTTP API
 
 All writes need `Authorization: Bearer $HOP_TOKEN`. Reads are anonymous.

@@ -43,7 +43,7 @@ func newServer(cfg Config, st *Store) *Server {
 	s := &Server{cfg: cfg, st: st, links: http.NewServeMux(), pastes: http.NewServeMux(),
 		limiter: newLimiter(10, 30), static: map[string][]byte{}}
 	h := sha256.New()
-	for _, name := range []string{"style.css", "app.js"} {
+	for _, name := range []string{"style.css", "app.js", "paste.css"} {
 		b, err := assets.ReadFile("static/" + name)
 		if err != nil {
 			panic("embedded static/" + name + " missing: " + err.Error())
@@ -52,12 +52,15 @@ func newServer(cfg Config, st *Store) *Server {
 		h.Write(b)
 	}
 	s.assetVer = fmt.Sprintf("%x", h.Sum(nil))[:10]
+	// paste.css also carries the chroma stylesheet generated at startup
+	s.static["paste.css"] = append(append(s.static["paste.css"], '\n'), highlightCSS()...)
 
 	for _, m := range []*http.ServeMux{s.links, s.pastes} {
 		m.HandleFunc("GET /healthz", s.healthz)
 		// explicit paths, not /static/{name}: a wildcard there would conflict with GET /{id}/raw
 		m.HandleFunc("GET /static/style.css", s.serveStatic("style.css"))
 		m.HandleFunc("GET /static/app.js", s.serveStatic("app.js"))
+		m.HandleFunc("GET /static/paste.css", s.serveStatic("paste.css"))
 		m.Handle("GET /api/links", s.auth(s.listLinks))
 		m.Handle("POST /api/links", s.auth(s.createLink))
 		m.Handle("DELETE /api/links/{slug}", s.auth(s.deleteLink))
@@ -195,6 +198,7 @@ func humanTTL(d time.Duration) string {
 	}
 }
 
+
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -259,11 +263,25 @@ func (s *Server) showPaste(w http.ResponseWriter, r *http.Request) {
 	if ext != "" {
 		lang = ext
 	}
+	lexer := pickLexer(lang, p.Title, p.Content)
+	code, err := renderCode(lexer, p.Content)
+	if err != nil {
+		log.Printf("paste highlight %s: %v", p.ID, err)
+		http.Error(w, "render error", http.StatusInternalServerError)
+		return
+	}
+	plain := string(p.Content)
+	nLines := strings.Count(strings.TrimRight(plain, "\n"), "\n") + 1
+	expires := "never"
+	if p.ExpiresAt != nil {
+		expires = "in " + humanDur(time.Until(*p.ExpiresAt)) + " (" + p.ExpiresAt.Format("2006-01-02") + ")"
+	}
 	s.htmlHeaders(w)
-	lines := strings.Split(strings.TrimRight(string(p.Content), "\n"), "\n")
 	data := map[string]any{
-		"P": p, "Lang": lang, "Lines": lines, "Repo": s.cfg.RepoURL,
-		"RawURL": "/" + p.ID + "/raw", "Size": humanSize(p.Size),
+		"ID": p.ID, "Title": p.Title, "Lang": langName(lexer), "Size": humanSize(p.Size), "Lines": nLines,
+		"Created": p.CreatedAt.Format("2006-01-02 15:04 UTC"), "Expires": expires,
+		"RawURL": "/" + p.ID + "/raw", "DownloadURL": "/" + p.ID + "/raw?dl=1",
+		"Code": code, "Plain": plain, "PlainRows": min(max(nLines, 3), 20), "Repo": s.cfg.RepoURL,
 	}
 	if err := tmpl.ExecuteTemplate(w, "paste.html", data); err != nil {
 		log.Printf("paste view: %v", err)
@@ -281,7 +299,11 @@ func (s *Server) rawPaste(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", "inline")
+	if r.URL.Query().Get("dl") == "1" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", downloadName(p, p.Lang)))
+	} else {
+		w.Header().Set("Content-Disposition", "inline")
+	}
 	w.Write(p.Content)
 }
 

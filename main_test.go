@@ -196,7 +196,7 @@ func TestPastesEscapingAndNegotiation(t *testing.T) {
 	if !strings.Contains(r.Header.Get("Content-Security-Policy"), "default-src 'none'") {
 		t.Fatalf("csp: %q", r.Header.Get("Content-Security-Policy"))
 	}
-	if strings.Count(string(b), "<li>") != 2 {
+	if strings.Count(string(b), `class="line"`) != 2 {
 		t.Fatalf("line count: %s", b)
 	}
 	// extension form and ?html=1 also give HTML; /raw never does

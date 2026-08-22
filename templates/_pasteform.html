@@ -1,8 +1,9 @@
 {{/* Shared by landing.html (paste host) and create.html.
      Expects the pageData map; optionally .CreateID (the create page). */}}
 {{define "paste-form"}}
-<form class="card{{if and (not .PublicPastes) (not .CreateID)}} hidden{{end}}" id="create-form" autocomplete="off">
-  {{if .PublicPastes}}<p class="badge" id="anon-badge">Anonymous — up to {{.AnonMax}}, expires in {{.AnonTTL}}. Text only.</p>{{end}}
+<form class="card{{if and (not .PublicPastes) (not .CreateID) (not .User)}} hidden{{end}}" id="create-form" autocomplete="off">
+  {{if .User}}<p class="badge" id="user-badge">Signed in · {{.User.Plan}} plan — up to {{.User.MaxPaste}}, kept {{if .User.Forever}}as long as you like{{else}}up to {{.User.MaxTTL}}{{end}}.</p>{{end}}
+  {{if .PublicPastes}}<p class="badge{{if .User}} hidden{{end}}" id="anon-badge">Anonymous — up to {{.AnonMax}}, expires in {{.AnonTTL}}. Text only.</p>{{end}}
   <div class="row">
     <label class="grow">Title <input type="text" id="p-title" maxlength="120" placeholder="optional, e.g. error.log"></label>
     <label>Language
@@ -10,9 +11,9 @@
         <option value="">text</option><option>bash</option><option>go</option><option>yaml</option><option>json</option><option>md</option><option>py</option><option>js</option><option>ts</option><option>toml</option><option>dockerfile</option><option>sql</option><option>log</option><option>diff</option>
       </select>
     </label>
-    <label id="p-ttl-wrap"{{if .PublicPastes}} class="hidden"{{end}}>Expires
+    <label id="p-ttl-wrap"{{if and .PublicPastes (not .User)}} class="hidden"{{end}}>Expires
       <select id="p-ttl">
-        <option value="">default ({{.DefaultTTL}})</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="365d">1 year</option><option value="0">never</option>
+        <option value="">default ({{.DefaultTTL}})</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="30d">30 days</option>{{if or (not .User) .User.Forever}}<option value="365d">1 year</option><option value="0">never</option>{{end}}
       </select>
     </label>
   </div>
@@ -23,7 +24,7 @@
   <div class="row end"><span class="muted small" id="p-size">0 B</span><button type="submit" class="btn">{{if .CreateID}}Create {{.PasteHost}}/{{.CreateID}}{{else}}Create paste{{end}}</button></div>
   <p class="flash err hidden" id="create-error"></p>
 </form>
-{{if .PublicPastes}}
+{{if and .PublicPastes (not .User)}}
 <details class="card token-details" id="token-details">
   <summary>Have the write token? Unlock for {{.MaxPaste}}, {{.DefaultTTL}} or forever, list &amp; delete.</summary>
   <div id="token-card">

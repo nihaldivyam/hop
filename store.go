@@ -24,8 +24,9 @@ type Link struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	Hits      int64      `json:"hits"`
 	LastUsed  *time.Time `json:"last_used,omitempty"`
-	Anon      bool       `json:"anon"`         // created without a token (public links mode)
-	IP        string     `json:"ip,omitempty"` // creator IP, anonymous links only; never shown publicly
+	Anon      bool       `json:"anon"`                // created without a token (public links mode)
+	IP        string     `json:"ip,omitempty"`        // creator IP, anonymous links only; never shown publicly
+	OwnerSub  string     `json:"owner_sub,omitempty"` // signed-in user (OIDC subject) who created it; empty for owner-token/anonymous items
 }
 
 type Paste struct {
@@ -36,8 +37,9 @@ type Paste struct {
 	Size      int64      `json:"size"`
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	Anon      bool       `json:"anon"`         // created without a token (public pastes mode)
-	IP        string     `json:"ip,omitempty"` // creator IP, anonymous pastes only; never shown on the public view
+	Anon      bool       `json:"anon"`                // created without a token (public pastes mode)
+	IP        string     `json:"ip,omitempty"`        // creator IP, anonymous pastes only; never shown on the public view
+	OwnerSub  string     `json:"owner_sub,omitempty"` // signed-in user (OIDC subject) who created it; empty for owner-token/anonymous items
 }
 
 type Store struct{ db *sql.DB }
@@ -90,8 +92,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	for col, ddl := range map[string]string{
-		"anon": `ALTER TABLE pastes ADD COLUMN anon INTEGER NOT NULL DEFAULT 0`,
-		"ip":   `ALTER TABLE pastes ADD COLUMN ip TEXT`,
+		"anon":      `ALTER TABLE pastes ADD COLUMN anon INTEGER NOT NULL DEFAULT 0`,
+		"ip":        `ALTER TABLE pastes ADD COLUMN ip TEXT`,
+		"owner_sub": `ALTER TABLE pastes ADD COLUMN owner_sub TEXT`,
 	} {
 		if !have[col] {
 			if _, err := db.Exec(ddl); err != nil {
@@ -107,8 +110,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	for col, ddl := range map[string]string{
-		"anon": `ALTER TABLE links ADD COLUMN anon INTEGER NOT NULL DEFAULT 0`,
-		"ip":   `ALTER TABLE links ADD COLUMN ip TEXT`,
+		"anon":      `ALTER TABLE links ADD COLUMN anon INTEGER NOT NULL DEFAULT 0`,
+		"ip":        `ALTER TABLE links ADD COLUMN ip TEXT`,
+		"owner_sub": `ALTER TABLE links ADD COLUMN owner_sub TEXT`,
 	} {
 		if !haveL[col] {
 			if _, err := db.Exec(ddl); err != nil {
@@ -116,7 +120,31 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
-	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS links_anon_created ON links(anon, created_at)`)
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS links_anon_created ON links(anon, created_at)`); err != nil {
+		return err
+	}
+	// accounts: signed-in users (OIDC subjects), their API tokens, and ownership indexes
+	_, err = db.Exec(`
+CREATE TABLE IF NOT EXISTS users (
+  sub            TEXT PRIMARY KEY,
+  email          TEXT NOT NULL DEFAULT '',
+  name           TEXT NOT NULL DEFAULT '',
+  plan_cache     TEXT NOT NULL DEFAULT '',
+  plan_cached_at INTEGER,
+  created_at     INTEGER NOT NULL,
+  last_seen      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_tokens (
+  id         TEXT PRIMARY KEY,
+  sub        TEXT NOT NULL,
+  hash       TEXT NOT NULL UNIQUE,
+  name       TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  last_used  INTEGER
+);
+CREATE INDEX IF NOT EXISTS user_tokens_sub ON user_tokens(sub);
+CREATE INDEX IF NOT EXISTS links_owner ON links(owner_sub);
+CREATE INDEX IF NOT EXISTS pastes_owner ON pastes(owner_sub);`)
 	return err
 }
 
@@ -173,8 +201,8 @@ func (s *Store) CreateLink(ctx context.Context, l *Link) error {
 		anon = 1
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO links (slug, url, created_at, expires_at, anon, ip) VALUES (?, ?, ?, ?, ?, ?)`,
-		l.Slug, l.URL, l.CreatedAt.Unix(), toUnix(l.ExpiresAt), anon, nullStr(l.IP))
+		`INSERT INTO links (slug, url, created_at, expires_at, anon, ip, owner_sub) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		l.Slug, l.URL, l.CreatedAt.Unix(), toUnix(l.ExpiresAt), anon, nullStr(l.IP), nullStr(l.OwnerSub))
 	if isSQLiteUnique(err) {
 		return errExists
 	}
@@ -187,10 +215,10 @@ func (s *Store) GetLink(ctx context.Context, slug string) (*Link, error) {
 	var created int64
 	var exp, last sql.NullInt64
 	var anon int
-	var ip sql.NullString
+	var ip, owner sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT slug, url, created_at, expires_at, hits, last_used, anon, ip FROM links WHERE slug = ?`, slug).
-		Scan(&l.Slug, &l.URL, &created, &exp, &l.Hits, &last, &anon, &ip)
+		`SELECT slug, url, created_at, expires_at, hits, last_used, anon, ip, owner_sub FROM links WHERE slug = ?`, slug).
+		Scan(&l.Slug, &l.URL, &created, &exp, &l.Hits, &last, &anon, &ip, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errNotFound
 	}
@@ -199,7 +227,7 @@ func (s *Store) GetLink(ctx context.Context, slug string) (*Link, error) {
 	}
 	l.CreatedAt = time.Unix(created, 0).UTC()
 	l.ExpiresAt, l.LastUsed = fromUnix(exp), fromUnix(last)
-	l.Anon, l.IP = anon == 1, ip.String
+	l.Anon, l.IP, l.OwnerSub = anon == 1, ip.String, owner.String
 	if l.ExpiresAt != nil && !l.ExpiresAt.After(time.Now()) {
 		return nil, errNotFound
 	}
@@ -212,8 +240,16 @@ func (s *Store) TouchLink(ctx context.Context, slug string) error {
 	return err
 }
 
-func (s *Store) DeleteLink(ctx context.Context, slug string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM links WHERE slug = ?`, slug)
+// DeleteLink removes a slug. With owner != "" only a link owned by that user is
+// removed (a user cannot delete someone else's); the owner token passes "".
+func (s *Store) DeleteLink(ctx context.Context, slug, owner string) error {
+	var res sql.Result
+	var err error
+	if owner == "" {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM links WHERE slug = ?`, slug)
+	} else {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM links WHERE slug = ? AND owner_sub = ?`, slug, owner)
+	}
 	if err != nil {
 		return err
 	}
@@ -223,10 +259,17 @@ func (s *Store) DeleteLink(ctx context.Context, slug string) error {
 	return nil
 }
 
-func (s *Store) ListLinks(ctx context.Context) ([]Link, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT slug, url, created_at, expires_at, hits, last_used, anon, ip FROM links
-		 WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC LIMIT 1000`, time.Now().Unix())
+// ListLinks lists live links; owner == "" means everything (the owner token),
+// otherwise only links created by that signed-in user.
+func (s *Store) ListLinks(ctx context.Context, owner string) ([]Link, error) {
+	q := `SELECT slug, url, created_at, expires_at, hits, last_used, anon, ip, owner_sub FROM links
+		 WHERE (expires_at IS NULL OR expires_at > ?)`
+	args := []any{time.Now().Unix()}
+	if owner != "" {
+		q += ` AND owner_sub = ?`
+		args = append(args, owner)
+	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY created_at DESC LIMIT 1000`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -237,13 +280,13 @@ func (s *Store) ListLinks(ctx context.Context) ([]Link, error) {
 		var created int64
 		var exp, last sql.NullInt64
 		var anon int
-		var ip sql.NullString
-		if err := rows.Scan(&l.Slug, &l.URL, &created, &exp, &l.Hits, &last, &anon, &ip); err != nil {
+		var ip, owner sql.NullString
+		if err := rows.Scan(&l.Slug, &l.URL, &created, &exp, &l.Hits, &last, &anon, &ip, &owner); err != nil {
 			return nil, err
 		}
 		l.CreatedAt = time.Unix(created, 0).UTC()
 		l.ExpiresAt, l.LastUsed = fromUnix(exp), fromUnix(last)
-		l.Anon, l.IP = anon == 1, ip.String
+		l.Anon, l.IP, l.OwnerSub = anon == 1, ip.String, owner.String
 		out = append(out, l)
 	}
 	return out, rows.Err()
@@ -275,8 +318,8 @@ func (s *Store) CreatePaste(ctx context.Context, p *Paste) error {
 		anon = 1
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO pastes (id, title, lang, content, size, created_at, expires_at, anon, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Title, p.Lang, p.Content, p.Size, p.CreatedAt.Unix(), toUnix(p.ExpiresAt), anon, nullStr(p.IP))
+		`INSERT INTO pastes (id, title, lang, content, size, created_at, expires_at, anon, ip, owner_sub) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Title, p.Lang, p.Content, p.Size, p.CreatedAt.Unix(), toUnix(p.ExpiresAt), anon, nullStr(p.IP), nullStr(p.OwnerSub))
 	if isSQLiteUnique(err) {
 		return errExists
 	}
@@ -288,10 +331,10 @@ func (s *Store) GetPaste(ctx context.Context, id string) (*Paste, error) {
 	var created int64
 	var exp sql.NullInt64
 	var anon int
-	var ip sql.NullString
+	var ip, owner sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, title, lang, content, size, created_at, expires_at, anon, ip FROM pastes WHERE id = ?`, id).
-		Scan(&p.ID, &p.Title, &p.Lang, &p.Content, &p.Size, &created, &exp, &anon, &ip)
+		`SELECT id, title, lang, content, size, created_at, expires_at, anon, ip, owner_sub FROM pastes WHERE id = ?`, id).
+		Scan(&p.ID, &p.Title, &p.Lang, &p.Content, &p.Size, &created, &exp, &anon, &ip, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errNotFound
 	}
@@ -300,15 +343,22 @@ func (s *Store) GetPaste(ctx context.Context, id string) (*Paste, error) {
 	}
 	p.CreatedAt = time.Unix(created, 0).UTC()
 	p.ExpiresAt = fromUnix(exp)
-	p.Anon, p.IP = anon == 1, ip.String
+	p.Anon, p.IP, p.OwnerSub = anon == 1, ip.String, owner.String
 	if p.ExpiresAt != nil && !p.ExpiresAt.After(time.Now()) {
 		return nil, errNotFound
 	}
 	return &p, nil
 }
 
-func (s *Store) DeletePaste(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM pastes WHERE id = ?`, id)
+// DeletePaste removes a paste; owner != "" restricts it to that user's pastes.
+func (s *Store) DeletePaste(ctx context.Context, id, owner string) error {
+	var res sql.Result
+	var err error
+	if owner == "" {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM pastes WHERE id = ?`, id)
+	} else {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM pastes WHERE id = ? AND owner_sub = ?`, id, owner)
+	}
 	if err != nil {
 		return err
 	}
@@ -318,10 +368,16 @@ func (s *Store) DeletePaste(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *Store) ListPastes(ctx context.Context) ([]Paste, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, title, lang, size, created_at, expires_at, anon, ip FROM pastes
-		 WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC LIMIT 1000`, time.Now().Unix())
+// ListPastes lists live pastes (without content); owner == "" means everything.
+func (s *Store) ListPastes(ctx context.Context, owner string) ([]Paste, error) {
+	q := `SELECT id, title, lang, size, created_at, expires_at, anon, ip, owner_sub FROM pastes
+		 WHERE (expires_at IS NULL OR expires_at > ?)`
+	args := []any{time.Now().Unix()}
+	if owner != "" {
+		q += ` AND owner_sub = ?`
+		args = append(args, owner)
+	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY created_at DESC LIMIT 1000`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -332,13 +388,13 @@ func (s *Store) ListPastes(ctx context.Context) ([]Paste, error) {
 		var created int64
 		var exp sql.NullInt64
 		var anon int
-		var ip sql.NullString
-		if err := rows.Scan(&p.ID, &p.Title, &p.Lang, &p.Size, &created, &exp, &anon, &ip); err != nil {
+		var ip, owner sql.NullString
+		if err := rows.Scan(&p.ID, &p.Title, &p.Lang, &p.Size, &created, &exp, &anon, &ip, &owner); err != nil {
 			return nil, err
 		}
 		p.CreatedAt = time.Unix(created, 0).UTC()
 		p.ExpiresAt = fromUnix(exp)
-		p.Anon, p.IP = anon == 1, ip.String
+		p.Anon, p.IP, p.OwnerSub = anon == 1, ip.String, owner.String
 		out = append(out, p)
 	}
 	return out, rows.Err()

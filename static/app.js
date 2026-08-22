@@ -23,13 +23,24 @@
   // navigates to the paste once it exists instead of showing the result card
   var createID = body.getAttribute('data-create-id') || '';
   var pID = $('p-id');
-  if (!tokenInput || !unlockBtn || !form) return;
+  // accounts: a signed-in session (cookie) replaces the token; the server tells us the plan limits
+  var user = body.getAttribute('data-user') || '';
+  var sessionMode = !!user;
+  var planMax = parseInt(body.getAttribute('data-plan-max-bytes') || '0', 10) || 0;
+  var planForever = body.getAttribute('data-plan-forever') === '1';
+  var page = body.getAttribute('data-page') || '';
+
+  // --- the account page (tokens) is its own little app -------------------------------
+  if (page === 'account') { accountPage(); return; }
+  if (!form) return;
+  if (!sessionMode && (!tokenInput || !unlockBtn)) return;
 
   var token = '';
   try { token = localStorage.getItem(KEY) || ''; } catch (e) { token = ''; }
 
   function show(el, on) { if (el) el.classList.toggle('hidden', !on); }
   function setStatus(text, cls) {
+    if (!tokenStatus) return;
     tokenStatus.textContent = text;
     tokenStatus.className = 'muted small' + (cls ? ' ' + cls : '');
   }
@@ -38,8 +49,8 @@
     try { if (t) localStorage.setItem(KEY, t); else localStorage.removeItem(KEY); } catch (e) { /* private mode: keep in memory */ }
   }
   function headers(extra) {
-    var h = {};
-    if (token) h['Authorization'] = 'Bearer ' + token; // anonymous pastes send no token at all
+    var h = { 'X-Requested-With': 'hop' }; // same-origin marker: the server requires it for cookie-authenticated writes
+    if (token && !sessionMode) h['Authorization'] = 'Bearer ' + token; // anonymous pastes send no token at all
     if (extra) for (var k in extra) if (extra[k] !== undefined && extra[k] !== '') h[k] = extra[k];
     return h;
   }
@@ -56,7 +67,8 @@
   }
   function errText(res) {
     var d = res.data || {};
-    if (res.status === 401) return 'token rejected — check it and unlock again';
+    if (res.status === 401) return sessionMode ? 'your session expired — sign in again' : 'token rejected — check it and unlock again';
+    if (res.status === 403) return d.error || 'refused';
     if (res.status === 503) return 'writes are disabled on this instance';
     if (res.status === 429) {
       if (d.retry_after_seconds) return 'rate limited — try again in ' + humanWait(d.retry_after_seconds) + (token ? '' : ' (or unlock with the token)');
@@ -94,7 +106,16 @@
   }
 
   // --- lock / unlock -----------------------------------------------------------
+  function sessionStart() {
+    // signed in: the cookie authenticates; full plan limits; list what is yours
+    show(form, true); show(anonBadge, false); show(ttlWrap, true);
+    show(lSlugWrap, true); show(lTTLWrap, true); show(lAnonNote, false);
+    show(resultCard, false); show(listCard, true);
+    if (typeof updSize === 'function') updSize();
+    loadList();
+  }
   function anonMode() {
+    if (sessionMode) { sessionStart(); return; }
     // public pastes/links: the form stays usable without a token, within the anonymous limits
     // (on the create page the form is always shown; without public mode it needs an unlock first)
     show(form, isPublic || !!createID); show(anonBadge, isPublic); show(ttlWrap, !publicPastes);
@@ -104,6 +125,7 @@
   }
   function lock() {
     saveToken('');
+    if (sessionMode) { location.assign('/login?next=' + encodeURIComponent(location.pathname)); return; } // session expired
     tokenInput.value = '';
     anonMode();
     tokenInput.disabled = false; unlockBtn.disabled = false;
@@ -129,9 +151,9 @@
       else { token = ''; setStatus(errText(res), 'err'); }
     }).catch(function () { token = ''; setStatus('network error', 'err'); });
   }
-  unlockBtn.addEventListener('click', function () { unlock(tokenInput.value); });
-  tokenInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); unlock(tokenInput.value); } });
-  forgetBtn.addEventListener('click', lock);
+  if (unlockBtn) unlockBtn.addEventListener('click', function () { unlock(tokenInput.value); });
+  if (tokenInput) tokenInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); unlock(tokenInput.value); } });
+  if (forgetBtn) forgetBtn.addEventListener('click', lock);
 
   // --- create --------------------------------------------------------------------
   function showError(msg) { createErr.textContent = msg; show(createErr, !!msg); }
@@ -143,7 +165,7 @@
 
   if (kind === 'links') {
     var lURL = $('l-url'), lSlug = $('l-slug'), lTTL = $('l-ttl');
-    var isAnonLink = function () { return publicLinks && !token; };
+    var isAnonLink = function () { return publicLinks && !token && !sessionMode; };
     form.addEventListener('submit', function (e) {
       e.preventDefault(); showError('');
       var payload = { url: lURL.value.trim() };
@@ -156,16 +178,17 @@
           btn.disabled = false;
           if (!res.ok) { showError(errText(res)); return; }
           showResult(res.data.short_url, '→ ' + res.data.url + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires') + (res.data.anon ? ' · anonymous (visitors see a confirmation page first)' : ''));
-          lURL.value = ''; lSlug.value = ''; if (token) loadList();
+          lURL.value = ''; lSlug.value = ''; if (token || sessionMode) loadList();
         }).catch(function () { btn.disabled = false; showError('network error'); });
     });
   } else {
     var pTitle = $('p-title'), pLang = $('p-lang'), pTTL = $('p-ttl'), pContent = $('p-content'), pSize = $('p-size');
-    var isAnon = function () { return publicPastes && !token; };
+    var isAnon = function () { return publicPastes && !token && !sessionMode; };
     var updSize = function () {
       var n = new Blob([pContent.value]).size;
-      var over = isAnon() && anonMax && n > anonMax;
-      pSize.textContent = fmtSize(n) + (isAnon() && anonMax ? ' / ' + fmtSize(anonMax) + (over ? ' — too large for an anonymous paste' : '') : '');
+      var cap = isAnon() ? anonMax : (sessionMode ? planMax : 0);
+      var over = cap && n > cap;
+      pSize.textContent = fmtSize(n) + (cap ? ' / ' + fmtSize(cap) + (over ? (isAnon() ? ' — too large for an anonymous paste' : ' — over your plan limit') : '') : '');
       pSize.className = 'muted small' + (over ? ' over' : '');
     };
     pContent.addEventListener('input', updSize);
@@ -186,7 +209,7 @@
         if (!res.ok) { showError(errText(res)); return; }
         if (createID) { location.assign('/' + encodeURIComponent(res.data.id)); return; } // the page becomes the paste
         showResult(res.data.url, fmtSize(res.data.size) + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires') + (res.data.anon ? ' · anonymous' : '') + ' · raw: ' + res.data.raw_url);
-        pContent.value = ''; pTitle.value = ''; if (pID) pID.value = ''; updSize(); if (token) loadList();
+        pContent.value = ''; pTitle.value = ''; if (pID) pID.value = ''; updSize(); if (token || sessionMode) loadList();
       }).catch(function () { btn.disabled = false; showError('network error'); });
     });
   }
@@ -238,6 +261,43 @@
   }
   if (refreshBtn) refreshBtn.addEventListener('click', loadList);
 
-  // initial state: a stored token unlocks; otherwise anonymous mode (public pastes) or locked
-  if (token) { unlock(token); } else { anonMode(); }
+  // initial state: signed in -> session mode; a stored token unlocks; otherwise anonymous mode (public pastes) or locked
+  if (sessionMode) { sessionStart(); } else if (token) { unlock(token); } else { anonMode(); }
+
+  // --- account page: create / revoke per-user API tokens ----------------------------------
+  function accountPage() {
+    var tokForm = $('token-form'), tokName = $('tok-name'), tokErr = $('tok-error'), tokNew = $('tok-new'), tokVal = $('tok-value'), tokCopy = $('tok-copy');
+    var tbody = document.querySelector('#tok-list tbody'), tokEmpty = $('tok-empty');
+    if (!tokForm) return;
+    function hdrs() { return { 'X-Requested-With': 'hop', 'Content-Type': 'application/json' }; }
+    function showErr(m) { tokErr.textContent = m; show(tokErr, !!m); }
+    function bindRevoke(btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-id');
+        if (!confirm('Revoke token ' + id + '? Anything using it stops working.')) return;
+        fetch('/api/tokens/' + encodeURIComponent(id), { method: 'DELETE', headers: hdrs(), cache: 'no-store' }).then(function (r) {
+          if (r.status === 204) { var tr = btn.closest('tr'); if (tr) tr.parentNode.removeChild(tr); show(tokEmpty, !tbody.children.length); }
+          else showErr('could not revoke (HTTP ' + r.status + ')');
+        });
+      });
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('.tok-revoke'), bindRevoke);
+    tokForm.addEventListener('submit', function (e) {
+      e.preventDefault(); showErr('');
+      fetch('/api/tokens', { method: 'POST', headers: hdrs(), body: JSON.stringify({ name: tokName.value.trim() }), cache: 'no-store' })
+        .then(function (r) { return r.text().then(function (t) { var d = {}; try { d = JSON.parse(t); } catch (e2) {} return { status: r.status, data: d }; }); })
+        .then(function (res) {
+          if (res.status !== 201) { showErr(res.data.error || ('request failed (HTTP ' + res.status + ')')); return; }
+          tokVal.textContent = res.data.token; show(tokNew, true);
+          var tr = el('tr', { 'data-id': res.data.id }, [
+            el('td', { text: res.data.name }), el('td', { class: 'dim', text: res.data.id }),
+            el('td', { class: 'dim', text: new Date().toISOString().slice(0, 10) }), el('td', { class: 'dim', text: 'never' })
+          ]);
+          var td = el('td', { class: 'actions' }); var b = el('button', { type: 'button', class: 'btn small danger tok-revoke', 'data-id': res.data.id, text: 'Revoke' });
+          bindRevoke(b); td.appendChild(b); tr.appendChild(td); tbody.insertBefore(tr, tbody.firstChild);
+          show(tokEmpty, false); tokName.value = '';
+        }).catch(function () { showErr('network error'); });
+    });
+    tokCopy.addEventListener('click', function () { copy(tokVal.textContent, tokCopy); });
+  }
 })();

@@ -42,11 +42,17 @@ type Server struct {
 	// used as ?v= in the templates so browsers can cache them hard but never stale.
 	static   map[string][]byte
 	assetVer string
+	// accounts: OIDC sign-in, sessions, per-user tokens, plan limits (inert when OIDC_CLIENT_ID is empty)
+	accounts *accounts
 }
 
 func newServer(cfg Config, st *Store) *Server {
+	if cfg.Plans == nil {
+		cfg.Plans = defaultPlans()
+	}
 	s := &Server{cfg: cfg, st: st, links: http.NewServeMux(), pastes: http.NewServeMux(),
 		limiter: newLimiter(10, 30), static: map[string][]byte{}}
+	s.accounts = newAccounts(cfg, st)
 	if cfg.AnonRateN > 0 && cfg.AnonRatePer > 0 {
 		s.anonLimiter = newLimiter(float64(cfg.AnonRateN)/cfg.AnonRatePer.Seconds(), float64(max(cfg.AnonBurst, 1)))
 	} else {
@@ -78,12 +84,21 @@ func newServer(cfg Config, st *Store) *Server {
 		m.HandleFunc("GET /static/paste.css", s.serveStatic("paste.css"))
 		m.Handle("GET /api/links", s.auth(s.listLinks))
 		m.HandleFunc("POST /api/links", s.createLinkGate)
-		m.Handle("DELETE /api/links", s.auth(s.purgeLinks))
+		m.Handle("DELETE /api/links", s.owner(s.purgeLinks))
 		m.Handle("DELETE /api/links/{slug}", s.auth(s.deleteLink))
 		m.Handle("GET /api/pastes", s.auth(s.listPastes))
 		m.HandleFunc("POST /api/pastes", s.createPasteGate)
-		m.Handle("DELETE /api/pastes", s.auth(s.purgePastes))
+		m.Handle("DELETE /api/pastes", s.owner(s.purgePastes))
 		m.Handle("DELETE /api/pastes/{id}", s.auth(s.deletePaste))
+		// accounts (404 when OIDC is not configured)
+		m.HandleFunc("GET /login", s.login)
+		m.HandleFunc("GET /auth/callback", s.authCallback)
+		m.HandleFunc("GET /logout", s.logout)
+		m.HandleFunc("GET /me", s.me)
+		m.HandleFunc("GET /account", s.accountPage)
+		m.Handle("GET /api/tokens", s.auth(s.listTokens))
+		m.Handle("POST /api/tokens", s.auth(s.createToken))
+		m.Handle("DELETE /api/tokens/{id}", s.auth(s.deleteToken))
 	}
 	s.links.HandleFunc("GET /{$}", s.landing("links"))
 	s.links.Handle("GET /{slug}", s.limit(s.redirect))
@@ -105,6 +120,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.links.ServeHTTP(w, r)
 }
 
+// Start kicks off background work (OIDC discovery with retries). Safe to skip in tests.
+func (s *Server) Start(ctx context.Context) { s.accounts.start(ctx) }
+
 func hostOf(r *http.Request) string {
 	h := r.Host
 	if hh, _, err := net.SplitHostPort(h); err == nil {
@@ -115,7 +133,31 @@ func hostOf(r *http.Request) string {
 
 // --- middleware ---------------------------------------------------------------
 
+// auth admits the owner token, a per-user token, or a signed-in session (the
+// latter only with the same-origin CSRF header on state-changing requests) and
+// puts the principal into the request context. Handlers scope by principal.
 func (s *Server) auth(h http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Token == "" && !s.accounts.enabled() {
+			jsonErr(w, http.StatusServiceUnavailable, "writes disabled: HOP_TOKEN is not set")
+			return
+		}
+		p, err := s.identify(r)
+		if err != nil || !p.authed() {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="hop"`)
+			jsonErr(w, http.StatusUnauthorized, "missing or invalid bearer token")
+			return
+		}
+		if p.Via == "session" && r.Method != http.MethodGet && r.Method != http.MethodHead && !sameOrigin(r) {
+			jsonErr(w, http.StatusForbidden, "cross-site request refused (send X-Requested-With: hop)")
+			return
+		}
+		h(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
+	})
+}
+
+// owner admits only the HOP_TOKEN holder (purges, instance-wide operations).
+func (s *Server) owner(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Token == "" {
 			jsonErr(w, http.StatusServiceUnavailable, "writes disabled: HOP_TOKEN is not set")
@@ -124,10 +166,10 @@ func (s *Server) auth(h http.HandlerFunc) http.Handler {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if got == r.Header.Get("Authorization") || subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="hop"`)
-			jsonErr(w, http.StatusUnauthorized, "missing or invalid bearer token")
+			jsonErr(w, http.StatusUnauthorized, "this operation needs the owner token")
 			return
 		}
-		h(w, r)
+		h(w, r.WithContext(context.WithValue(r.Context(), principalKey, principal{Kind: "owner", Via: "token"})))
 	})
 }
 
@@ -163,7 +205,7 @@ func (s *Server) clientIP(r *http.Request) string {
 func (s *Server) landing(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s.uiHeaders(w)
-		if err := tmpl.ExecuteTemplate(w, "landing.html", s.pageData(kind)); err != nil {
+		if err := tmpl.ExecuteTemplate(w, "landing.html", s.pageData(kind, r)); err != nil {
 			log.Printf("landing: %v", err)
 		}
 	}
@@ -177,9 +219,16 @@ func (s *Server) uiHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-cache")
 }
 
-// pageData is the template data shared by the landing pages and the create page.
-func (s *Server) pageData(kind string) map[string]any {
+// pageData is the template data shared by the landing pages, the create page and
+// the account page. r is used for the signed-in user (nil when anonymous).
+func (s *Server) pageData(kind string, r *http.Request) map[string]any {
+	var user *userView
+	if r != nil {
+		user = s.userViewFor(r)
+	}
 	return map[string]any{
+		// accounts
+		"Accounts": s.accounts.enabled(), "User": user, "Page": "",
 		"Kind": kind, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost, "PasteHost": s.cfg.PasteHost,
 		"MaxPaste": humanSize(s.cfg.MaxPasteBytes), "DefaultTTL": humanTTL(s.cfg.DefaultPasteTTL),
 		"AssetVer": s.assetVer, "WritesEnabled": s.cfg.Token != "",
@@ -201,7 +250,7 @@ func (s *Server) pageData(kind string) map[string]any {
 // creates the paste AT that name (app.js POSTs with X-Id and then navigates to
 // it). Invalid names get a 404 page with the rule. Non-browsers get plain 404.
 func (s *Server) createPage(w http.ResponseWriter, r *http.Request, name string) {
-	data := s.pageData("pastes")
+	data := s.pageData("pastes", r)
 	data["CreateID"] = name
 	data["Invalid"] = !validPasteID(name)
 	s.uiHeaders(w)
@@ -282,7 +331,7 @@ func (s *Server) redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if l.Anon && s.cfg.AnonLinkInterstitial && strings.Contains(r.Header.Get("Accept"), "text/html") {
-		s.interstitial(w, l)
+		s.interstitial(w, r, l)
 		return
 	}
 	s.follow(w, r, l)
@@ -304,7 +353,7 @@ func (s *Server) redirectGo(w http.ResponseWriter, r *http.Request) {
 
 // interstitial renders the confirmation page for an anonymous link: no scripts,
 // strict CSP, not indexed, no referrer leaks, never cached.
-func (s *Server) interstitial(w http.ResponseWriter, l *Link) {
+func (s *Server) interstitial(w http.ResponseWriter, r *http.Request, l *Link) {
 	u, _ := url.Parse(l.URL)
 	host := ""
 	if u != nil {
@@ -322,6 +371,7 @@ func (s *Server) interstitial(w http.ResponseWriter, l *Link) {
 		"Slug": l.Slug, "URL": l.URL, "Host": host, "GoURL": "/" + l.Slug + "/go",
 		"Created": humanDur(time.Since(l.CreatedAt)), "Expires": expires,
 		"AssetVer": s.assetVer, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost,
+		"Accounts": s.accounts.enabled(), "User": s.userViewFor(r),
 	}
 	if err := tmpl.ExecuteTemplate(w, "interstitial.html", data); err != nil {
 		log.Printf("interstitial: %v", err)
@@ -397,7 +447,7 @@ func (s *Server) showPaste(w http.ResponseWriter, r *http.Request) {
 		"Created": p.CreatedAt.Format("2006-01-02 15:04 UTC"), "Expires": expires,
 		"RawURL": "/" + p.ID + "/raw", "DownloadURL": "/" + p.ID + "/raw?dl=1",
 		"Code": code, "Plain": plain, "PlainRows": min(max(nLines, 3), 20), "Repo": s.cfg.RepoURL,
-		"Anon": p.Anon,
+		"Anon": p.Anon, "Accounts": s.accounts.enabled(), "User": s.userViewFor(r),
 	}
 	if err := tmpl.ExecuteTemplate(w, "paste.html", data); err != nil {
 		log.Printf("paste view: %v", err)
@@ -438,16 +488,28 @@ type linkReq struct {
 // host, and only when the request carries no Authorization header at all — a
 // wrong token is still rejected with 401 rather than silently downgraded.
 func (s *Server) createLinkGate(w http.ResponseWriter, r *http.Request) {
+	p, err := s.identify(r)
+	if err == nil && p.authed() {
+		s.auth(s.createLink).ServeHTTP(w, r)
+		return
+	}
 	if r.Header.Get("Authorization") == "" && s.cfg.PublicLinks && hostOf(r) == s.cfg.LinksHost {
 		s.createLinkAnon(w, r)
 		return
 	}
-	s.auth(s.createLink).ServeHTTP(w, r)
+	s.auth(s.createLink).ServeHTTP(w, r) // yields the 401/503
 }
 
-// createLink is the token path: custom slugs, any TTL (0 = forever), direct redirects.
+// createLink is the authenticated path: owner token (unlimited) or a signed-in
+// user (plan limits): custom slugs, direct redirects, TTL 0 allowed where the plan allows.
 func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
-	s.storeLink(w, r, false, "")
+	p := principalFrom(r.Context())
+	if p.isUser() {
+		if !s.userQuota(w, r, p) {
+			return
+		}
+	}
+	s.storeLink(w, r, p, false, "")
 }
 
 // createLinkAnon is the public path: random slug only, short-lived, rate-limited,
@@ -474,7 +536,7 @@ func (s *Server) createLinkAnon(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.storeLink(w, r, true, ip)
+	s.storeLink(w, r, principal{Kind: "anon"}, true, ip)
 }
 
 // anonTargetOK applies the stricter destination rules for anonymous links:
@@ -503,8 +565,8 @@ func (s *Server) anonTargetOK(u *url.URL) (string, bool) {
 	return "", true
 }
 
-// storeLink does the shared work of both paths.
-func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, anon bool, ip string) {
+// storeLink does the shared work of all paths.
+func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, p principal, anon bool, ip string) {
 	var req linkReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "body must be JSON {url, slug?, ttl?}")
@@ -525,13 +587,17 @@ func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, anon bool, ip
 			return
 		}
 	}
-	l := &Link{URL: u.String(), CreatedAt: time.Now().UTC(), Anon: anon}
+	l := &Link{URL: u.String(), CreatedAt: time.Now().UTC(), Anon: anon, OwnerSub: p.ownerScope()}
 	if anon {
 		l.IP = ip
 	}
 	ttl := time.Duration(0)
 	if anon {
 		ttl = s.cfg.AnonLinkMaxTTL
+	}
+	var plan planLimits
+	if p.isUser() {
+		plan = s.accounts.limitsFor(p.Plan)
 	}
 	if req.TTL != "" {
 		d, err := parseTTL(req.TTL)
@@ -543,6 +609,9 @@ func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, anon bool, ip
 	}
 	if anon && (ttl <= 0 || ttl > s.cfg.AnonLinkMaxTTL) {
 		ttl = s.cfg.AnonLinkMaxTTL // anonymous links always expire, at most after AnonLinkMaxTTL
+	}
+	if p.isUser() && plan.MaxTTL > 0 && (ttl <= 0 || ttl > plan.MaxTTL) {
+		ttl = plan.MaxTTL // the free plan cannot make permanent links
 	}
 	if ttl > 0 {
 		t := l.CreatedAt.Add(ttl)
@@ -588,7 +657,7 @@ func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, anon bool, ip
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"slug": l.Slug, "short_url": "https://" + s.cfg.LinksHost + "/" + l.Slug,
-		"url": l.URL, "expires_at": l.ExpiresAt, "anon": anon,
+		"url": l.URL, "expires_at": l.ExpiresAt, "anon": anon, "owned": p.isUser(),
 	})
 }
 
@@ -608,7 +677,7 @@ func (s *Server) purgeLinks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
-	switch err := s.st.DeleteLink(r.Context(), r.PathValue("slug")); {
+	switch err := s.st.DeleteLink(r.Context(), r.PathValue("slug"), principalFrom(r.Context()).ownerScope()); {
 	case errors.Is(err, errNotFound):
 		jsonErr(w, http.StatusNotFound, "no such slug")
 	case err != nil:
@@ -619,7 +688,8 @@ func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
-	ls, err := s.st.ListLinks(r.Context())
+	p := principalFrom(r.Context())
+	ls, err := s.st.ListLinks(r.Context(), p.ownerScope())
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "storage error")
 		return
@@ -631,8 +701,11 @@ func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
 			"slug": l.Slug, "short_url": "https://" + s.cfg.LinksHost + "/" + l.Slug, "url": l.URL,
 			"created_at": l.CreatedAt, "expires_at": l.ExpiresAt, "hits": l.Hits, "last_used": l.LastUsed, "anon": l.Anon,
 		}
-		if l.Anon {
-			row["ip"] = l.IP // token holders see who created anonymous links; nobody else does
+		if l.Anon && p.isOwner() {
+			row["ip"] = l.IP // the owner sees who created anonymous links; nobody else does
+		}
+		if l.OwnerSub != "" && p.isOwner() {
+			row["owner_sub"] = l.OwnerSub
 		}
 		out = append(out, row)
 	}
@@ -644,16 +717,56 @@ func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
 // host, and only when the request carries no Authorization header at all — a
 // wrong token is still rejected with 401 rather than silently downgraded.
 func (s *Server) createPasteGate(w http.ResponseWriter, r *http.Request) {
+	p, err := s.identify(r)
+	if err == nil && p.authed() {
+		s.auth(s.createPaste).ServeHTTP(w, r)
+		return
+	}
 	if r.Header.Get("Authorization") == "" && s.cfg.PublicPastes && hostOf(r) == s.cfg.PasteHost {
 		s.createPasteAnon(w, r)
 		return
 	}
-	s.auth(s.createPaste).ServeHTTP(w, r)
+	s.auth(s.createPaste).ServeHTTP(w, r) // yields the 401/503
 }
 
-// createPaste is the token path: full limits, TTL 0 allowed.
+// createPaste is the authenticated path: the owner token gets the instance
+// limits (TTL 0 allowed); a signed-in user gets their plan's limits.
 func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
-	s.storePaste(w, r, false, s.cfg.MaxPasteBytes, s.cfg.DefaultPasteTTL, "")
+	p := principalFrom(r.Context())
+	if p.isUser() {
+		if !s.userQuota(w, r, p) {
+			return
+		}
+		pl := s.accounts.limitsFor(p.Plan)
+		s.storePaste(w, r, p, false, pl.MaxPasteBytes, pl.DefaultPasteTTL, "")
+		return
+	}
+	s.storePaste(w, r, p, false, s.cfg.MaxPasteBytes, s.cfg.DefaultPasteTTL, "")
+}
+
+// userQuota applies a signed-in user's rate limit and item cap; false = response written.
+func (s *Server) userQuota(w http.ResponseWriter, r *http.Request, p principal) bool {
+	pl := s.accounts.limitsFor(p.Plan)
+	if lim := s.accounts.limits[pl.Name]; lim != nil {
+		if ok, wait := lim.allowWait(p.Sub); !ok {
+			secs := int(wait.Seconds()) + 1
+			w.Header().Set("Retry-After", fmt.Sprint(secs))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "rate limited for the " + pl.Name + " plan", "retry_after_seconds": secs})
+			return false
+		}
+	}
+	if pl.MaxItems > 0 {
+		n, err := s.st.CountOwned(r.Context(), p.Sub)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, "storage error")
+			return false
+		}
+		if n >= pl.MaxItems {
+			jsonErr(w, http.StatusTooManyRequests, fmt.Sprintf("the %s plan holds at most %d links + pastes — delete some or upgrade", pl.Name, pl.MaxItems))
+			return false
+		}
+	}
+	return true
 }
 
 // createPasteAnon is the public path: small, short-lived, rate-limited, text only.
@@ -679,13 +792,13 @@ func (s *Server) createPasteAnon(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.storePaste(w, r, true, s.cfg.AnonMaxBytes, s.cfg.AnonMaxTTL, ip)
+	s.storePaste(w, r, principal{Kind: "anon"}, true, s.cfg.AnonMaxBytes, s.cfg.AnonMaxTTL, ip)
 }
 
 // storePaste does the shared work. For anonymous pastes the TTL is clamped to
 // maxTTL (and "forever" is not available), binary content is refused, and the
 // creator IP is recorded for abuse handling.
-func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, anon bool, limit int64, defaultTTL time.Duration, ip string) {
+func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, p principal, anon bool, limit int64, defaultTTL time.Duration, ip string) {
 	body, title, lang, err := readPasteBody(r, limit)
 	if err != nil {
 		var mbe *http.MaxBytesError
@@ -693,6 +806,8 @@ func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, anon bool, l
 			msg := fmt.Sprintf("paste larger than %d bytes", limit)
 			if anon {
 				msg = fmt.Sprintf("anonymous pastes are limited to %d bytes (%s); unlock with the token for more", limit, humanSize(limit))
+			} else if p.isUser() {
+				msg = fmt.Sprintf("the %s plan allows pastes up to %s", p.Plan, humanSize(limit))
 			}
 			jsonErr(w, http.StatusRequestEntityTooLarge, msg)
 			return
@@ -718,14 +833,19 @@ func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, anon bool, l
 	if anon && (ttl <= 0 || ttl > s.cfg.AnonMaxTTL) {
 		ttl = s.cfg.AnonMaxTTL // anonymous pastes always expire, at most after AnonMaxTTL
 	}
-	p := &Paste{Title: clip(title, 120), Lang: clip(lang, 20), Content: body, Size: int64(len(body)),
-		CreatedAt: time.Now().UTC(), Anon: anon}
+	if p.isUser() {
+		if pl := s.accounts.limitsFor(p.Plan); pl.MaxTTL > 0 && (ttl <= 0 || ttl > pl.MaxTTL) {
+			ttl = pl.MaxTTL // the free plan cannot keep pastes forever
+		}
+	}
+	pst := &Paste{Title: clip(title, 120), Lang: clip(lang, 20), Content: body, Size: int64(len(body)),
+		CreatedAt: time.Now().UTC(), Anon: anon, OwnerSub: p.ownerScope()}
 	if anon {
-		p.IP = ip
+		pst.IP = ip
 	}
 	if ttl > 0 {
-		t := p.CreatedAt.Add(ttl)
-		p.ExpiresAt = &t
+		t := pst.CreatedAt.Add(ttl)
+		pst.ExpiresAt = &t
 	}
 	// optional custom id ("name your own URL"): X-Id header or ?id= query
 	custom := strings.TrimSpace(r.Header.Get("X-Id"))
@@ -737,8 +857,8 @@ func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, anon bool, l
 			jsonErr(w, http.StatusBadRequest, "invalid id: "+pasteIDRule)
 			return
 		}
-		p.ID = custom
-		if err := s.st.CreatePaste(r.Context(), p); errors.Is(err, errExists) {
+		pst.ID = custom
+		if err := s.st.CreatePaste(r.Context(), pst); errors.Is(err, errExists) {
 			jsonErr(w, http.StatusConflict, "id taken")
 			return
 		} else if err != nil {
@@ -747,8 +867,8 @@ func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, anon bool, l
 		}
 	} else {
 		for attempt := 0; ; attempt++ {
-			p.ID = randomID(8)
-			err := s.st.CreatePaste(r.Context(), p)
+			pst.ID = randomID(8)
+			err := s.st.CreatePaste(r.Context(), pst)
 			if err == nil {
 				break
 			}
@@ -759,11 +879,11 @@ func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, anon bool, l
 		}
 	}
 	if anon {
-		log.Printf("anon paste id=%s ip=%s bytes=%d ttl=%s custom=%t", p.ID, ip, p.Size, ttl, custom != "")
+		log.Printf("anon paste id=%s ip=%s bytes=%d ttl=%s custom=%t", pst.ID, ip, pst.Size, ttl, custom != "")
 	}
-	base := "https://" + s.cfg.PasteHost + "/" + p.ID
+	base := "https://" + s.cfg.PasteHost + "/" + pst.ID
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": p.ID, "url": base, "raw_url": base + "/raw", "expires_at": p.ExpiresAt, "size": p.Size, "anon": anon,
+		"id": pst.ID, "url": base, "raw_url": base + "/raw", "expires_at": pst.ExpiresAt, "size": pst.Size, "anon": anon, "owned": p.isUser(),
 	})
 }
 
@@ -821,7 +941,7 @@ func readPasteBody(r *http.Request, limit int64) (body []byte, title, lang strin
 }
 
 func (s *Server) deletePaste(w http.ResponseWriter, r *http.Request) {
-	switch err := s.st.DeletePaste(r.Context(), r.PathValue("id")); {
+	switch err := s.st.DeletePaste(r.Context(), r.PathValue("id"), principalFrom(r.Context()).ownerScope()); {
 	case errors.Is(err, errNotFound):
 		jsonErr(w, http.StatusNotFound, "no such paste")
 	case err != nil:
@@ -832,7 +952,8 @@ func (s *Server) deletePaste(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listPastes(w http.ResponseWriter, r *http.Request) {
-	ps, err := s.st.ListPastes(r.Context())
+	p := principalFrom(r.Context())
+	ps, err := s.st.ListPastes(r.Context(), p.ownerScope())
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "storage error")
 		return
@@ -844,8 +965,11 @@ func (s *Server) listPastes(w http.ResponseWriter, r *http.Request) {
 			"id": p.ID, "title": p.Title, "lang": p.Lang, "size": p.Size, "url": base, "raw_url": base + "/raw",
 			"created_at": p.CreatedAt, "expires_at": p.ExpiresAt, "anon": p.Anon,
 		}
-		if p.Anon {
-			row["ip"] = p.IP // token holders see who created anonymous pastes; the public view never does
+		if p.Anon && principalFrom(r.Context()).isOwner() {
+			row["ip"] = p.IP // the owner sees who created anonymous pastes; the public view never does
+		}
+		if p.OwnerSub != "" && principalFrom(r.Context()).isOwner() {
+			row["owner_sub"] = p.OwnerSub
 		}
 		out = append(out, row)
 	}

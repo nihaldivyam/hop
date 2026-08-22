@@ -41,6 +41,19 @@ type Config struct {
 	AnonLinkBurst        int           // HOP_ANON_LINK_BURST
 	AnonLinkDailyCap     int64         // HOP_ANON_LINK_DAILY_CAP — global anonymous links per UTC day
 	AnonLinkInterstitial bool          // HOP_ANON_LINK_INTERSTITIAL — browsers see a confirmation page before an anonymous redirect
+
+	// Accounts (off unless OIDC_CLIENT_ID is set): sign in through an OIDC
+	// provider, own your links/pastes, per-user API tokens, plan-based limits.
+	OIDCIssuer        string   // OIDC_ISSUER (https://accounts.divyam.top)
+	OIDCClientID      string   // OIDC_CLIENT_ID
+	OIDCClientSecret  string   // OIDC_CLIENT_SECRET (optional; PKCE is always used)
+	OIDCRedirectURLs  []string // OIDC_REDIRECT_URLS — comma list, one per host (…/auth/callback)
+	SessionSecret     string   // HOP_SESSION_SECRET — encrypts the session cookie; random (and logged) if empty
+	CookieDomain      string   // HOP_COOKIE_DOMAIN — e.g. divyam.top so one sign-in covers both hosts
+	BillingURL        string   // BILLING_URL — internal entitlements service (http://billing:8084)
+	BillingToken      string   // BILLING_INTERNAL_TOKEN
+	BillingAccountURL string   // HOP_BILLING_ACCOUNT_URL — where users upgrade (linked from /account)
+	Plans             map[string]planLimits
 }
 
 func loadConfig() (Config, error) {
@@ -69,6 +82,24 @@ func loadConfig() (Config, error) {
 		AnonLinkBurst:        2,
 		AnonLinkDailyCap:     200,
 		AnonLinkInterstitial: env("HOP_ANON_LINK_INTERSTITIAL", "true") == "true",
+
+		OIDCIssuer:        strings.TrimRight(os.Getenv("OIDC_ISSUER"), "/"),
+		OIDCClientID:      os.Getenv("OIDC_CLIENT_ID"),
+		OIDCClientSecret:  os.Getenv("OIDC_CLIENT_SECRET"),
+		SessionSecret:     os.Getenv("HOP_SESSION_SECRET"),
+		CookieDomain:      os.Getenv("HOP_COOKIE_DOMAIN"),
+		BillingURL:        os.Getenv("BILLING_URL"),
+		BillingToken:      os.Getenv("BILLING_INTERNAL_TOKEN"),
+		BillingAccountURL: env("HOP_BILLING_ACCOUNT_URL", "https://billing.divyam.top/account"),
+		Plans:             defaultPlans(),
+	}
+	for _, u := range strings.Split(os.Getenv("OIDC_REDIRECT_URLS"), ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			c.OIDCRedirectURLs = append(c.OIDCRedirectURLs, u)
+		}
+	}
+	if c.OIDCClientID != "" && c.OIDCIssuer == "" {
+		return c, fmt.Errorf("OIDC_CLIENT_ID is set but OIDC_ISSUER is empty")
 	}
 	if v := os.Getenv("HOP_MAX_PASTE_BYTES"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)

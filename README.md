@@ -16,9 +16,9 @@ that I could drive from a terminal. It is deployed at `go.divyam.top` /
 ## Quick start
 
 ```bash
+docker build -t hop .
 docker run -d --name hop -p 8090:8090 -v hop-data:/data \
-  -e HOP_TOKEN=change-me -e HOP_LINKS_HOST=go.example -e HOP_PASTE_HOST=paste.example \
-  ghcr.io/nihaldivyam/hop:latest   # or: docker build -t hop . && docker run ... hop
+  -e HOP_TOKEN=change-me -e HOP_LINKS_HOST=go.example -e HOP_PASTE_HOST=paste.example hop
 
 # a short link
 curl -sS -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \

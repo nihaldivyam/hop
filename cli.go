@@ -359,6 +359,8 @@ type pasteRow struct {
 	Size      int64      `json:"size"`
 	URL       string     `json:"url"`
 	ExpiresAt *time.Time `json:"expires_at"`
+	Anon      bool       `json:"anon"`
+	IP        string     `json:"ip"`
 }
 
 func fetchLinks() ([]linkRow, error) {
@@ -412,9 +414,16 @@ func cmdList(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(tw, "ID\tTITLE\tSIZE\tEXPIRES\tURL")
+		fmt.Fprintln(tw, "ID\tTITLE\tSIZE\tEXPIRES\tANON\tURL")
 		for _, p := range ps {
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", p.ID, p.Title, p.Size, expires(p.ExpiresAt), p.URL)
+			anon := "-"
+			if p.Anon {
+				anon = "anon"
+				if p.IP != "" {
+					anon += " " + p.IP
+				}
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", p.ID, p.Title, p.Size, expires(p.ExpiresAt), anon, p.URL)
 		}
 		if len(ps) == 0 {
 			fmt.Fprintln(tw, "(no pastes)")

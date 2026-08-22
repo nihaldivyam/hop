@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -33,6 +34,8 @@ type Server struct {
 	links   *http.ServeMux
 	pastes  *http.ServeMux
 	limiter *limiter
+	// anonLimiter meters anonymous paste creation per client IP (public pastes mode).
+	anonLimiter *limiter
 	// static assets (embedded) keyed by file name, plus a short content hash
 	// used as ?v= in the templates so browsers can cache them hard but never stale.
 	static   map[string][]byte
@@ -42,6 +45,11 @@ type Server struct {
 func newServer(cfg Config, st *Store) *Server {
 	s := &Server{cfg: cfg, st: st, links: http.NewServeMux(), pastes: http.NewServeMux(),
 		limiter: newLimiter(10, 30), static: map[string][]byte{}}
+	if cfg.AnonRateN > 0 && cfg.AnonRatePer > 0 {
+		s.anonLimiter = newLimiter(float64(cfg.AnonRateN)/cfg.AnonRatePer.Seconds(), float64(max(cfg.AnonBurst, 1)))
+	} else {
+		s.anonLimiter = newLimiter(5.0/3600, 2)
+	}
 	h := sha256.New()
 	for _, name := range []string{"style.css", "app.js", "paste.css"} {
 		b, err := assets.ReadFile("static/" + name)
@@ -65,7 +73,8 @@ func newServer(cfg Config, st *Store) *Server {
 		m.Handle("POST /api/links", s.auth(s.createLink))
 		m.Handle("DELETE /api/links/{slug}", s.auth(s.deleteLink))
 		m.Handle("GET /api/pastes", s.auth(s.listPastes))
-		m.Handle("POST /api/pastes", s.auth(s.createPaste))
+		m.HandleFunc("POST /api/pastes", s.createPasteGate)
+		m.Handle("DELETE /api/pastes", s.auth(s.purgePastes))
 		m.Handle("DELETE /api/pastes/{id}", s.auth(s.deletePaste))
 	}
 	s.links.HandleFunc("GET /{$}", s.landing("links"))
@@ -151,6 +160,10 @@ func (s *Server) landing(kind string) http.HandlerFunc {
 			"Kind": kind, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost, "PasteHost": s.cfg.PasteHost,
 			"MaxPaste": humanSize(s.cfg.MaxPasteBytes), "DefaultTTL": humanTTL(s.cfg.DefaultPasteTTL),
 			"AssetVer": s.assetVer, "WritesEnabled": s.cfg.Token != "",
+			// anonymous pastes (paste host only)
+			"PublicPastes": kind == "pastes" && s.cfg.PublicPastes,
+			"AnonMaxBytes": s.cfg.AnonMaxBytes, "AnonMax": humanSize(s.cfg.AnonMaxBytes),
+			"AnonTTL": humanDur(s.cfg.AnonMaxTTL), "AnonTTLRaw": s.cfg.AnonMaxTTL.String(),
 		}
 		if err := tmpl.ExecuteTemplate(w, "landing.html", data); err != nil {
 			log.Printf("landing: %v", err)
@@ -281,6 +294,7 @@ func (s *Server) showPaste(w http.ResponseWriter, r *http.Request) {
 		"Created": p.CreatedAt.Format("2006-01-02 15:04 UTC"), "Expires": expires,
 		"RawURL": "/" + p.ID + "/raw", "DownloadURL": "/" + p.ID + "/raw?dl=1",
 		"Code": code, "Plain": plain, "PlainRows": min(max(nLines, 3), 20), "Repo": s.cfg.RepoURL,
+		"Anon": p.Anon,
 	}
 	if err := tmpl.ExecuteTemplate(w, "paste.html", data); err != nil {
 		log.Printf("paste view: %v", err)
@@ -404,13 +418,62 @@ func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// createPasteGate decides between the token path and the anonymous path.
+// Anonymous creates exist only when HOP_PUBLIC_PASTES is on, only on the paste
+// host, and only when the request carries no Authorization header at all — a
+// wrong token is still rejected with 401 rather than silently downgraded.
+func (s *Server) createPasteGate(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") == "" && s.cfg.PublicPastes && hostOf(r) == s.cfg.PasteHost {
+		s.createPasteAnon(w, r)
+		return
+	}
+	s.auth(s.createPaste).ServeHTTP(w, r)
+}
+
+// createPaste is the token path: full limits, TTL 0 allowed.
 func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
-	limit := s.cfg.MaxPasteBytes
+	s.storePaste(w, r, false, s.cfg.MaxPasteBytes, s.cfg.DefaultPasteTTL, "")
+}
+
+// createPasteAnon is the public path: small, short-lived, rate-limited, text only.
+func (s *Server) createPasteAnon(w http.ResponseWriter, r *http.Request) {
+	ip := s.clientIP(r)
+	if ok, wait := s.anonLimiter.allowWait(ip); !ok {
+		secs := int(wait.Seconds()) + 1
+		log.Printf("anon paste rate-limited ip=%s retry_after=%ds", ip, secs)
+		w.Header().Set("Retry-After", fmt.Sprint(secs))
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "rate limited", "retry_after_seconds": secs})
+		return
+	}
+	if s.cfg.AnonDailyCap >= 0 {
+		day := time.Now().UTC().Truncate(24 * time.Hour)
+		n, err := s.st.CountAnonSince(r.Context(), day)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, "storage error")
+			return
+		}
+		if n >= s.cfg.AnonDailyCap {
+			log.Printf("anon paste daily cap reached ip=%s cap=%d", ip, s.cfg.AnonDailyCap)
+			jsonErr(w, http.StatusTooManyRequests, "daily cap reached")
+			return
+		}
+	}
+	s.storePaste(w, r, true, s.cfg.AnonMaxBytes, s.cfg.AnonMaxTTL, ip)
+}
+
+// storePaste does the shared work. For anonymous pastes the TTL is clamped to
+// maxTTL (and "forever" is not available), binary content is refused, and the
+// creator IP is recorded for abuse handling.
+func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, anon bool, limit int64, defaultTTL time.Duration, ip string) {
 	body, title, lang, err := readPasteBody(r, limit)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			jsonErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("paste larger than %d bytes", limit))
+			msg := fmt.Sprintf("paste larger than %d bytes", limit)
+			if anon {
+				msg = fmt.Sprintf("anonymous pastes are limited to %d bytes (%s); unlock with the token for more", limit, humanSize(limit))
+			}
+			jsonErr(w, http.StatusRequestEntityTooLarge, msg)
 			return
 		}
 		jsonErr(w, http.StatusBadRequest, err.Error())
@@ -420,14 +483,25 @@ func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "empty paste")
 		return
 	}
-	ttl := s.cfg.DefaultPasteTTL
+	if anon && bytes.IndexByte(body, 0) >= 0 {
+		jsonErr(w, http.StatusUnsupportedMediaType, "anonymous pastes must be text (binary content refused)")
+		return
+	}
+	ttl := defaultTTL
 	if v := r.Header.Get("X-TTL"); v != "" {
 		if ttl, err = parseTTL(v); err != nil {
 			jsonErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
-	p := &Paste{Title: clip(title, 120), Lang: clip(lang, 20), Content: body, Size: int64(len(body)), CreatedAt: time.Now().UTC()}
+	if anon && (ttl <= 0 || ttl > s.cfg.AnonMaxTTL) {
+		ttl = s.cfg.AnonMaxTTL // anonymous pastes always expire, at most after AnonMaxTTL
+	}
+	p := &Paste{Title: clip(title, 120), Lang: clip(lang, 20), Content: body, Size: int64(len(body)),
+		CreatedAt: time.Now().UTC(), Anon: anon}
+	if anon {
+		p.IP = ip
+	}
 	if ttl > 0 {
 		t := p.CreatedAt.Add(ttl)
 		p.ExpiresAt = &t
@@ -443,10 +517,28 @@ func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if anon {
+		log.Printf("anon paste id=%s ip=%s bytes=%d ttl=%s", p.ID, ip, p.Size, ttl)
+	}
 	base := "https://" + s.cfg.PasteHost + "/" + p.ID
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": p.ID, "url": base, "raw_url": base + "/raw", "expires_at": p.ExpiresAt, "size": p.Size,
+		"id": p.ID, "url": base, "raw_url": base + "/raw", "expires_at": p.ExpiresAt, "size": p.Size, "anon": anon,
 	})
+}
+
+// purgePastes removes every anonymous paste at once (DELETE /api/pastes?anon=1).
+func (s *Server) purgePastes(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("anon") != "1" {
+		jsonErr(w, http.StatusBadRequest, "use DELETE /api/pastes?anon=1 to purge anonymous pastes, or DELETE /api/pastes/{id}")
+		return
+	}
+	n, err := s.st.PurgeAnon(r.Context())
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "storage error")
+		return
+	}
+	log.Printf("anon pastes purged count=%d", n)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
 }
 
 // readPasteBody accepts raw bodies (any text/* or octet-stream) and multipart
@@ -507,10 +599,14 @@ func (s *Server) listPastes(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(ps))
 	for _, p := range ps {
 		base := "https://" + s.cfg.PasteHost + "/" + p.ID
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"id": p.ID, "title": p.Title, "lang": p.Lang, "size": p.Size, "url": base, "raw_url": base + "/raw",
-			"created_at": p.CreatedAt, "expires_at": p.ExpiresAt,
-		})
+			"created_at": p.CreatedAt, "expires_at": p.ExpiresAt, "anon": p.Anon,
+		}
+		if p.Anon {
+			row["ip"] = p.IP // token holders see who created anonymous pastes; the public view never does
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -568,6 +664,12 @@ func newLimiter(rate, burst float64) *limiter {
 }
 
 func (l *limiter) allow(key string) bool {
+	ok, _ := l.allowWait(key)
+	return ok
+}
+
+// allowWait is allow plus, on refusal, how long until the next token arrives.
+func (l *limiter) allowWait(key string) (bool, time.Duration) {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -587,8 +689,9 @@ func (l *limiter) allow(key string) bool {
 	bk.tokens = min(l.burst, bk.tokens+now.Sub(bk.last).Seconds()*l.rate)
 	bk.last = now
 	if bk.tokens < 1 {
-		return false
+		wait := time.Duration((1 - bk.tokens) / l.rate * float64(time.Second))
+		return false, wait
 	}
 	bk.tokens--
-	return true
+	return true, 0
 }

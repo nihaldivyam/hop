@@ -36,6 +36,8 @@ type Server struct {
 	limiter *limiter
 	// anonLimiter meters anonymous paste creation per client IP (public pastes mode).
 	anonLimiter *limiter
+	// anonLinkLimiter does the same for anonymous short links (public links mode).
+	anonLinkLimiter *limiter
 	// static assets (embedded) keyed by file name, plus a short content hash
 	// used as ?v= in the templates so browsers can cache them hard but never stale.
 	static   map[string][]byte
@@ -49,6 +51,11 @@ func newServer(cfg Config, st *Store) *Server {
 		s.anonLimiter = newLimiter(float64(cfg.AnonRateN)/cfg.AnonRatePer.Seconds(), float64(max(cfg.AnonBurst, 1)))
 	} else {
 		s.anonLimiter = newLimiter(5.0/3600, 2)
+	}
+	if cfg.AnonLinkRateN > 0 && cfg.AnonLinkRatePer > 0 {
+		s.anonLinkLimiter = newLimiter(float64(cfg.AnonLinkRateN)/cfg.AnonLinkRatePer.Seconds(), float64(max(cfg.AnonLinkBurst, 1)))
+	} else {
+		s.anonLinkLimiter = newLimiter(5.0/3600, 2)
 	}
 	h := sha256.New()
 	for _, name := range []string{"style.css", "app.js", "paste.css"} {
@@ -70,7 +77,8 @@ func newServer(cfg Config, st *Store) *Server {
 		m.HandleFunc("GET /static/app.js", s.serveStatic("app.js"))
 		m.HandleFunc("GET /static/paste.css", s.serveStatic("paste.css"))
 		m.Handle("GET /api/links", s.auth(s.listLinks))
-		m.Handle("POST /api/links", s.auth(s.createLink))
+		m.HandleFunc("POST /api/links", s.createLinkGate)
+		m.Handle("DELETE /api/links", s.auth(s.purgeLinks))
 		m.Handle("DELETE /api/links/{slug}", s.auth(s.deleteLink))
 		m.Handle("GET /api/pastes", s.auth(s.listPastes))
 		m.HandleFunc("POST /api/pastes", s.createPasteGate)
@@ -79,6 +87,7 @@ func newServer(cfg Config, st *Store) *Server {
 	}
 	s.links.HandleFunc("GET /{$}", s.landing("links"))
 	s.links.Handle("GET /{slug}", s.limit(s.redirect))
+	s.links.Handle("GET /{slug}/go", s.limit(s.redirectGo))
 	s.pastes.HandleFunc("GET /{$}", s.landing("pastes"))
 	s.pastes.Handle("GET /{id}", s.limit(s.showPaste))
 	s.pastes.Handle("GET /{id}/raw", s.limit(s.rawPaste))
@@ -164,6 +173,10 @@ func (s *Server) landing(kind string) http.HandlerFunc {
 			"PublicPastes": kind == "pastes" && s.cfg.PublicPastes,
 			"AnonMaxBytes": s.cfg.AnonMaxBytes, "AnonMax": humanSize(s.cfg.AnonMaxBytes),
 			"AnonTTL": humanDur(s.cfg.AnonMaxTTL), "AnonTTLRaw": s.cfg.AnonMaxTTL.String(),
+			// anonymous links (links host only)
+			"PublicLinks": kind == "links" && s.cfg.PublicLinks,
+			"AnonLinkTTL": humanDur(s.cfg.AnonLinkMaxTTL), "AnonLinkInterstitial": s.cfg.AnonLinkInterstitial,
+			"Public": (kind == "pastes" && s.cfg.PublicPastes) || (kind == "links" && s.cfg.PublicLinks),
 		}
 		if err := tmpl.ExecuteTemplate(w, "landing.html", data); err != nil {
 			log.Printf("landing: %v", err)
@@ -222,6 +235,11 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "ok\n")
 }
 
+// redirect serves GET /{slug}. Token-created links always 302. Anonymous links
+// 302 as well, except for browsers (Accept: text/html) when the interstitial
+// is on: they get a 200 confirmation page that names the destination and
+// links to /{slug}/go — a human sees where an anonymous link leads before
+// following it; curl/bots are not the concern and go straight through.
 func (s *Server) redirect(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	l, err := s.st.GetLink(r.Context(), slug)
@@ -233,6 +251,56 @@ func (s *Server) redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	if l.Anon && s.cfg.AnonLinkInterstitial && strings.Contains(r.Header.Get("Accept"), "text/html") {
+		s.interstitial(w, l)
+		return
+	}
+	s.follow(w, r, l)
+}
+
+// redirectGo serves GET /{slug}/go — the "Continue" target of the interstitial.
+func (s *Server) redirectGo(w http.ResponseWriter, r *http.Request) {
+	l, err := s.st.GetLink(r.Context(), r.PathValue("slug"))
+	if errors.Is(err, errNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	s.follow(w, r, l)
+}
+
+// interstitial renders the confirmation page for an anonymous link: no scripts,
+// strict CSP, not indexed, no referrer leaks, never cached.
+func (s *Server) interstitial(w http.ResponseWriter, l *Link) {
+	u, _ := url.Parse(l.URL)
+	host := ""
+	if u != nil {
+		host = u.Host
+	}
+	expires := "never"
+	if l.ExpiresAt != nil {
+		expires = "in " + humanDur(time.Until(*l.ExpiresAt)) + " (" + l.ExpiresAt.Format("2006-01-02") + ")"
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	w.Header().Set("Cache-Control", "no-store")
+	data := map[string]any{
+		"Slug": l.Slug, "URL": l.URL, "Host": host, "GoURL": "/" + l.Slug + "/go",
+		"Created": humanDur(time.Since(l.CreatedAt)), "Expires": expires,
+		"AssetVer": s.assetVer, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost,
+	}
+	if err := tmpl.ExecuteTemplate(w, "interstitial.html", data); err != nil {
+		log.Printf("interstitial: %v", err)
+	}
+}
+
+// follow performs the actual redirect and counts the hit.
+func (s *Server) follow(w http.ResponseWriter, r *http.Request, l *Link) {
+	slug := l.Slug
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -330,7 +398,78 @@ type linkReq struct {
 	TTL  string `json:"ttl"`
 }
 
+// createLinkGate decides between the token path and the anonymous path.
+// Anonymous creates exist only when HOP_PUBLIC_LINKS is on, only on the links
+// host, and only when the request carries no Authorization header at all — a
+// wrong token is still rejected with 401 rather than silently downgraded.
+func (s *Server) createLinkGate(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") == "" && s.cfg.PublicLinks && hostOf(r) == s.cfg.LinksHost {
+		s.createLinkAnon(w, r)
+		return
+	}
+	s.auth(s.createLink).ServeHTTP(w, r)
+}
+
+// createLink is the token path: custom slugs, any TTL (0 = forever), direct redirects.
 func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
+	s.storeLink(w, r, false, "")
+}
+
+// createLinkAnon is the public path: random slug only, short-lived, rate-limited,
+// stricter URL rules, and (by default) a confirmation page before the redirect.
+func (s *Server) createLinkAnon(w http.ResponseWriter, r *http.Request) {
+	ip := s.clientIP(r)
+	if ok, wait := s.anonLinkLimiter.allowWait(ip); !ok {
+		secs := int(wait.Seconds()) + 1
+		log.Printf("anon link rate-limited ip=%s retry_after=%ds", ip, secs)
+		w.Header().Set("Retry-After", fmt.Sprint(secs))
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "rate limited", "retry_after_seconds": secs})
+		return
+	}
+	if s.cfg.AnonLinkDailyCap >= 0 {
+		day := time.Now().UTC().Truncate(24 * time.Hour)
+		n, err := s.st.CountAnonLinksSince(r.Context(), day)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, "storage error")
+			return
+		}
+		if n >= s.cfg.AnonLinkDailyCap {
+			log.Printf("anon link daily cap reached ip=%s cap=%d", ip, s.cfg.AnonLinkDailyCap)
+			jsonErr(w, http.StatusTooManyRequests, "daily cap reached")
+			return
+		}
+	}
+	s.storeLink(w, r, true, ip)
+}
+
+// anonTargetOK applies the stricter destination rules for anonymous links:
+// absolute http(s), no credentials in the URL, no private/loopback/link-local
+// IP literals or localhost (no pointing the public redirector at internal
+// things), not this service itself (no redirect chains), ≤ 2048 chars.
+func (s *Server) anonTargetOK(u *url.URL) (string, bool) {
+	if len(u.String()) > 2048 {
+		return "url longer than 2048 characters", false
+	}
+	if u.User != nil {
+		return "url must not carry credentials (user:pass@)", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "url must be absolute http(s)", false
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == s.cfg.LinksHost || host == s.cfg.PasteHost {
+		return "that destination is not allowed for anonymous links", false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return "that destination is not allowed for anonymous links", false
+		}
+	}
+	return "", true
+}
+
+// storeLink does the shared work of both paths.
+func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, anon bool, ip string) {
 	var req linkReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "body must be JSON {url, slug?, ttl?}")
@@ -341,17 +480,38 @@ func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "url must be absolute http(s)")
 		return
 	}
-	l := &Link{URL: u.String(), CreatedAt: time.Now().UTC()}
+	if anon {
+		if msg, ok := s.anonTargetOK(u); !ok {
+			jsonErr(w, http.StatusBadRequest, msg)
+			return
+		}
+		if req.Slug != "" {
+			jsonErr(w, http.StatusBadRequest, "custom slugs need the token; anonymous links get a random slug")
+			return
+		}
+	}
+	l := &Link{URL: u.String(), CreatedAt: time.Now().UTC(), Anon: anon}
+	if anon {
+		l.IP = ip
+	}
+	ttl := time.Duration(0)
+	if anon {
+		ttl = s.cfg.AnonLinkMaxTTL
+	}
 	if req.TTL != "" {
 		d, err := parseTTL(req.TTL)
 		if err != nil {
 			jsonErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if d > 0 {
-			t := l.CreatedAt.Add(d)
-			l.ExpiresAt = &t
-		}
+		ttl = d
+	}
+	if anon && (ttl <= 0 || ttl > s.cfg.AnonLinkMaxTTL) {
+		ttl = s.cfg.AnonLinkMaxTTL // anonymous links always expire, at most after AnonLinkMaxTTL
+	}
+	if ttl > 0 {
+		t := l.CreatedAt.Add(ttl)
+		l.ExpiresAt = &t
 	}
 	if req.Slug != "" {
 		if !validSlug(req.Slug) {
@@ -367,8 +527,12 @@ func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// random slug; on the (rare) collision grow the length
+		// random slug; on the (rare) collision grow the length.
+		// Anonymous links get one extra character so they are distinguishable.
 		n := 5
+		if anon {
+			n = 6
+		}
 		for attempt := 0; ; attempt++ {
 			l.Slug = randomID(n)
 			err := s.st.CreateLink(r.Context(), l)
@@ -384,10 +548,28 @@ func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if anon {
+		log.Printf("anon link slug=%s ip=%s target_host=%s ttl=%s", l.Slug, ip, u.Host, ttl)
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"slug": l.Slug, "short_url": "https://" + s.cfg.LinksHost + "/" + l.Slug,
-		"url": l.URL, "expires_at": l.ExpiresAt,
+		"url": l.URL, "expires_at": l.ExpiresAt, "anon": anon,
 	})
+}
+
+// purgeLinks removes every anonymous link at once (DELETE /api/links?anon=1).
+func (s *Server) purgeLinks(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("anon") != "1" {
+		jsonErr(w, http.StatusBadRequest, "use DELETE /api/links?anon=1 to purge anonymous links, or DELETE /api/links/{slug}")
+		return
+	}
+	n, err := s.st.PurgeAnonLinks(r.Context())
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "storage error")
+		return
+	}
+	log.Printf("anon links purged count=%d", n)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
 }
 
 func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
@@ -410,10 +592,14 @@ func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
 	// same shape as the create response, so clients never have to guess the host
 	out := make([]map[string]any, 0, len(ls))
 	for _, l := range ls {
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"slug": l.Slug, "short_url": "https://" + s.cfg.LinksHost + "/" + l.Slug, "url": l.URL,
-			"created_at": l.CreatedAt, "expires_at": l.ExpiresAt, "hits": l.Hits, "last_used": l.LastUsed,
-		})
+			"created_at": l.CreatedAt, "expires_at": l.ExpiresAt, "hits": l.Hits, "last_used": l.LastUsed, "anon": l.Anon,
+		}
+		if l.Anon {
+			row["ip"] = l.IP // token holders see who created anonymous links; nobody else does
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

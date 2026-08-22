@@ -24,6 +24,8 @@ type Link struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	Hits      int64      `json:"hits"`
 	LastUsed  *time.Time `json:"last_used,omitempty"`
+	Anon      bool       `json:"anon"`         // created without a token (public links mode)
+	IP        string     `json:"ip,omitempty"` // creator IP, anonymous links only; never shown publicly
 }
 
 type Paste struct {
@@ -97,7 +99,24 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
-	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS pastes_anon_created ON pastes(anon, created_at)`)
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS pastes_anon_created ON pastes(anon, created_at)`); err != nil {
+		return err
+	}
+	haveL, err := columns(db, "links")
+	if err != nil {
+		return err
+	}
+	for col, ddl := range map[string]string{
+		"anon": `ALTER TABLE links ADD COLUMN anon INTEGER NOT NULL DEFAULT 0`,
+		"ip":   `ALTER TABLE links ADD COLUMN ip TEXT`,
+	} {
+		if !haveL[col] {
+			if _, err := db.Exec(ddl); err != nil {
+				return fmt.Errorf("links.%s: %w", col, err)
+			}
+		}
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS links_anon_created ON links(anon, created_at)`)
 	return err
 }
 
@@ -149,9 +168,13 @@ func isSQLiteUnique(err error) bool {
 // --- links ------------------------------------------------------------------
 
 func (s *Store) CreateLink(ctx context.Context, l *Link) error {
+	anon := 0
+	if l.Anon {
+		anon = 1
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO links (slug, url, created_at, expires_at) VALUES (?, ?, ?, ?)`,
-		l.Slug, l.URL, l.CreatedAt.Unix(), toUnix(l.ExpiresAt))
+		`INSERT INTO links (slug, url, created_at, expires_at, anon, ip) VALUES (?, ?, ?, ?, ?, ?)`,
+		l.Slug, l.URL, l.CreatedAt.Unix(), toUnix(l.ExpiresAt), anon, nullStr(l.IP))
 	if isSQLiteUnique(err) {
 		return errExists
 	}
@@ -163,9 +186,11 @@ func (s *Store) GetLink(ctx context.Context, slug string) (*Link, error) {
 	var l Link
 	var created int64
 	var exp, last sql.NullInt64
+	var anon int
+	var ip sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT slug, url, created_at, expires_at, hits, last_used FROM links WHERE slug = ?`, slug).
-		Scan(&l.Slug, &l.URL, &created, &exp, &l.Hits, &last)
+		`SELECT slug, url, created_at, expires_at, hits, last_used, anon, ip FROM links WHERE slug = ?`, slug).
+		Scan(&l.Slug, &l.URL, &created, &exp, &l.Hits, &last, &anon, &ip)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errNotFound
 	}
@@ -174,6 +199,7 @@ func (s *Store) GetLink(ctx context.Context, slug string) (*Link, error) {
 	}
 	l.CreatedAt = time.Unix(created, 0).UTC()
 	l.ExpiresAt, l.LastUsed = fromUnix(exp), fromUnix(last)
+	l.Anon, l.IP = anon == 1, ip.String
 	if l.ExpiresAt != nil && !l.ExpiresAt.After(time.Now()) {
 		return nil, errNotFound
 	}
@@ -199,7 +225,7 @@ func (s *Store) DeleteLink(ctx context.Context, slug string) error {
 
 func (s *Store) ListLinks(ctx context.Context) ([]Link, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT slug, url, created_at, expires_at, hits, last_used FROM links
+		`SELECT slug, url, created_at, expires_at, hits, last_used, anon, ip FROM links
 		 WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC LIMIT 1000`, time.Now().Unix())
 	if err != nil {
 		return nil, err
@@ -210,14 +236,35 @@ func (s *Store) ListLinks(ctx context.Context) ([]Link, error) {
 		var l Link
 		var created int64
 		var exp, last sql.NullInt64
-		if err := rows.Scan(&l.Slug, &l.URL, &created, &exp, &l.Hits, &last); err != nil {
+		var anon int
+		var ip sql.NullString
+		if err := rows.Scan(&l.Slug, &l.URL, &created, &exp, &l.Hits, &last, &anon, &ip); err != nil {
 			return nil, err
 		}
 		l.CreatedAt = time.Unix(created, 0).UTC()
 		l.ExpiresAt, l.LastUsed = fromUnix(exp), fromUnix(last)
+		l.Anon, l.IP = anon == 1, ip.String
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+// CountAnonLinksSince counts anonymous links created at or after t (the daily cap).
+func (s *Store) CountAnonLinksSince(ctx context.Context, t time.Time) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM links WHERE anon = 1 AND created_at >= ?`, t.Unix()).Scan(&n)
+	return n, err
+}
+
+// PurgeAnonLinks deletes every anonymous link (the abuse kill switch). Returns rows removed.
+func (s *Store) PurgeAnonLinks(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM links WHERE anon = 1`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // --- pastes -----------------------------------------------------------------

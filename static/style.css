@@ -84,3 +84,15 @@ td.actions .btn { margin-left: .3rem; }
 .token-details[open] summary { margin-bottom: .8rem; }
 .muted.over { color: hsl(0,70%,70%); font-weight: 600; }
 .foot .aup { margin: 0 0 .5rem; }
+
+/* anonymous link interstitial (GET /{slug} from a browser) */
+.interstitial { max-width: 44rem; }
+.interstitial h1 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin: 0 0 .75rem; letter-spacing: -.01em; }
+.interstitial .dest { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .9rem 1rem; margin: 1rem 0; overflow-wrap: anywhere; }
+.interstitial .dest strong { font-size: 1.1rem; }
+.interstitial .dest .full { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem; }
+.interstitial .actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+.interstitial .btn.go { font-size: 1rem; padding: .6rem 1.1rem; }
+.interstitial .foot { margin-top: 2rem; }
+/* anonymous links (public mode) */
+.anon-note { color: var(--muted); font-size: .85rem; margin: .2rem 0 0; flex-basis: 100%; }

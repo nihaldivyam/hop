@@ -34,16 +34,42 @@ to it (Caddy, nginx, Traefik — one upstream, two hosts). `hop` routes by the
 
 ## CLI
 
-The same binary is the client:
+The same binary is the client. Point it at your instance once, then forget about tokens.
+
+**Install** — `go install github.com/nihaldivyam/hop@latest` (needs Go), or `make build` in a
+clone, or `make hop-setup` from the [voyager](https://github.com/nihaldivyam/voyager) repo which
+builds it and logs in for you.
+
+**Log in once** (writes `~/.config/hop/config.json`, mode 600):
 
 ```bash
-export HOP_API=https://go.example HOP_TOKEN=...
-hop link https://kubernetes.io/docs/ k8s     # -> https://go.example/k8s
-hop link https://example.com                 # random 5-char slug
-cat error.log | hop paste                    # -> https://paste.example/8hZp2Kq3
-hop paste deploy.sh                          # title + language from the file name
-HOP_TTL=1d hop paste secrets.txt             # expires in a day
+hop login --api https://go.example        # prompts for the token, input hidden
+hop whoami                                 # api + masked token + config path
 ```
+
+Config precedence is **flags > `HOP_API`/`HOP_TOKEN` env > config file**, so CI can still pass the
+token by env and one-offs can override with `--api/--token`.
+
+```bash
+hop link https://kubernetes.io/docs/ k8s   # -> https://go.example/k8s
+hop link https://example.com --ttl 30d     # random slug, expires in 30 days
+hop paste deploy.sh                         # title + language from the file name
+kubectl get pods -A | hop paste --lang text # from stdin
+hop link https://example.com | pbcopy       # only the URL is printed, so this just works
+```
+
+| command | what |
+|---|---|
+| `hop login [--api URL] [--token T]` | remember the API URL and token (prompts for what's missing) |
+| `hop logout` / `hop whoami` | forget them / show them (token masked) |
+| `hop link <url> [slug] [--ttl 30d]` | create a short link → prints the short URL |
+| `hop paste [file] [--title T] [--lang L] [--ttl 7d]` | paste a file or stdin → prints the URL |
+| `hop ls [links\|pastes]` | list what exists (slug/hits/expiry/target, id/title/size) |
+| `hop rm <slug-or-id> [--link\|--paste]` | delete (auto-detects) |
+| `hop open <slug-or-id> [-b]` | print the public URL (`-b` opens it in the browser) |
+| `hop version` | build version |
+
+Errors go to stderr with a non-zero exit; only the created URL goes to stdout.
 
 ## HTTP API
 

@@ -313,7 +313,15 @@ func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "storage error")
 		return
 	}
-	writeJSON(w, http.StatusOK, ls)
+	// same shape as the create response, so clients never have to guess the host
+	out := make([]map[string]any, 0, len(ls))
+	for _, l := range ls {
+		out = append(out, map[string]any{
+			"slug": l.Slug, "short_url": "https://" + s.cfg.LinksHost + "/" + l.Slug, "url": l.URL,
+			"created_at": l.CreatedAt, "expires_at": l.ExpiresAt, "hits": l.Hits, "last_used": l.LastUsed,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
@@ -416,7 +424,15 @@ func (s *Server) listPastes(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "storage error")
 		return
 	}
-	writeJSON(w, http.StatusOK, ps)
+	out := make([]map[string]any, 0, len(ps))
+	for _, p := range ps {
+		base := "https://" + s.cfg.PasteHost + "/" + p.ID
+		out = append(out, map[string]any{
+			"id": p.ID, "title": p.Title, "lang": p.Lang, "size": p.Size, "url": base, "raw_url": base + "/raw",
+			"created_at": p.CreatedAt, "expires_at": p.ExpiresAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // --- small helpers --------------------------------------------------------------

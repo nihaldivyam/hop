@@ -3,7 +3,7 @@
 body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 a { color: var(--acc); text-decoration: none; } a:hover { text-decoration: underline; }
 code, .lines, .tag { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.landing { max-width: 40rem; margin: 12vh auto; padding: 0 1.25rem; }
+.landing { max-width: 40rem; margin: 8vh auto; padding: 0 1.25rem; }
 .landing h1 { font-size: 2.2rem; margin: 0 0 .5rem; letter-spacing: -.02em; }
 .landing code { background: var(--card); padding: .1em .35em; border-radius: 4px; }
 .muted { color: var(--muted); font-size: .9rem; }
@@ -17,3 +17,11 @@ main { padding: 0; }
 .lines li::before { content: counter(l); color: var(--muted); text-align: right; min-width: 3.5em; padding-right: 1em; user-select: none; flex: none; }
 .lines li:hover { background: var(--card); }
 footer { padding: 1rem 1.25rem; border-top: 1px solid var(--line); }
+
+/* global site header (canonical copy of voyager shared/sitenav.css) */
+.sitenav{position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;gap:12px 20px;flex-wrap:wrap;padding:10px 20px;background:hsl(240,2%,13%);border-bottom:1px solid hsl(0,0%,22%);font-family:Poppins,ui-sans-serif,system-ui,sans-serif}
+.sitenav-brand{color:hsl(45,100%,72%);font-weight:600;font-size:15px;letter-spacing:.01em;text-decoration:none;display:inline-block}
+.sitenav-links{display:flex;flex-wrap:wrap;gap:4px 16px}
+.sitenav-links a{color:hsl(0,0%,84%);font-size:14px;text-decoration:none;padding:4px 0;display:inline-block}
+.sitenav-links a:hover,.sitenav-links a.is-active{color:hsl(45,100%,72%)}
+@media(max-width:580px){.sitenav{padding:8px 12px}.sitenav-links{gap:2px 12px}.sitenav-links a{font-size:13px}}

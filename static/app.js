@@ -4,12 +4,17 @@
   'use strict';
   var body = document.body;
   var kind = body.getAttribute('data-kind') === 'pastes' ? 'pastes' : 'links';
+  // public pastes mode: the paste host accepts anonymous creates (small, short-lived)
+  var publicPastes = kind === 'pastes' && body.getAttribute('data-public-pastes') === '1';
+  var anonMax = parseInt(body.getAttribute('data-anon-max-bytes') || '0', 10) || 0;
+  var anonTTL = body.getAttribute('data-anon-ttl') || '';
   var KEY = 'hop.token';
   var $ = function (id) { return document.getElementById(id); };
   var tokenInput = $('token'), unlockBtn = $('unlock'), forgetBtn = $('forget'), tokenStatus = $('token-status');
   var form = $('create-form'), createErr = $('create-error');
   var resultCard = $('result-card'), resultURL = $('result-url'), resultMeta = $('result-meta'), copyResult = $('copy-result');
   var listCard = $('list-card'), listBody = document.querySelector('#list tbody'), listEmpty = $('list-empty'), refreshBtn = $('refresh');
+  var anonBadge = $('anon-badge'), ttlWrap = $('p-ttl-wrap'), tokenDetails = $('token-details');
   if (!tokenInput || !unlockBtn || !form) return;
 
   var token = '';
@@ -25,7 +30,8 @@
     try { if (t) localStorage.setItem(KEY, t); else localStorage.removeItem(KEY); } catch (e) { /* private mode: keep in memory */ }
   }
   function headers(extra) {
-    var h = { 'Authorization': 'Bearer ' + token };
+    var h = {};
+    if (token) h['Authorization'] = 'Bearer ' + token; // anonymous pastes send no token at all
     if (extra) for (var k in extra) if (extra[k] !== undefined && extra[k] !== '') h[k] = extra[k];
     return h;
   }
@@ -41,10 +47,22 @@
       });
   }
   function errText(res) {
+    var d = res.data || {};
     if (res.status === 401) return 'token rejected — check it and unlock again';
     if (res.status === 503) return 'writes are disabled on this instance';
-    if (res.status === 429) return 'slow down — rate limited';
-    return (res.data && res.data.error) ? res.data.error : ('request failed (HTTP ' + res.status + ')');
+    if (res.status === 429) {
+      if (d.retry_after_seconds) return 'rate limited — try again in ' + humanWait(d.retry_after_seconds) + (token ? '' : ' (or unlock with the token)');
+      return d.error === 'daily cap reached' ? 'the anonymous paste budget for today is used up — try tomorrow or unlock with the token' : 'slow down — rate limited';
+    }
+    if (res.status === 413) return d.error || ('too large' + (anonMax ? ' — anonymous pastes are limited to ' + fmtSize(anonMax) : ''));
+    if (res.status === 415) return d.error || 'anonymous pastes must be plain text';
+    return d.error ? d.error : ('request failed (HTTP ' + res.status + ')');
+  }
+  function humanWait(sec) {
+    sec = Math.max(1, Math.round(sec));
+    if (sec < 90) return sec + ' s';
+    if (sec < 5400) return Math.round(sec / 60) + ' min';
+    return (sec / 3600).toFixed(1) + ' h';
   }
   function fmtDate(s) { if (!s) return '—'; var d = new Date(s); return isNaN(d) ? s : d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'; }
   function fmtSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MiB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KiB' : n + ' B'; }
@@ -67,17 +85,26 @@
   }
 
   // --- lock / unlock -----------------------------------------------------------
+  function anonMode() {
+    // public pastes: the form stays usable without a token, within the anonymous limits
+    show(form, publicPastes); show(anonBadge, publicPastes); show(ttlWrap, !publicPastes);
+    show(resultCard, false); show(listCard, false); show(forgetBtn, false);
+    if (publicPastes && typeof updSize === 'function') updSize();
+  }
   function lock() {
     saveToken('');
     tokenInput.value = '';
-    show(form, false); show(resultCard, false); show(listCard, false); show(forgetBtn, false);
+    anonMode();
     tokenInput.disabled = false; unlockBtn.disabled = false;
     setStatus('Locked. The token is the HOP_TOKEN value — see “Where is my token” below.');
   }
   function unlocked() {
     show(form, true); show(listCard, true); show(forgetBtn, true);
+    show(anonBadge, false); show(ttlWrap, true);
+    if (tokenDetails) tokenDetails.open = true;
     tokenInput.value = '••••••••••••'; tokenInput.disabled = true; unlockBtn.disabled = true;
-    setStatus('Unlocked — the token is stored in this browser only.', 'ok');
+    setStatus('Unlocked — full limits, and your pastes are listed below. The token is stored in this browser only.', 'ok');
+    if (typeof updSize === 'function') updSize();
     loadList();
   }
   function unlock(t) {
@@ -93,7 +120,6 @@
   unlockBtn.addEventListener('click', function () { unlock(tokenInput.value); });
   tokenInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); unlock(tokenInput.value); } });
   forgetBtn.addEventListener('click', lock);
-  if (token) { unlock(token); }
 
   // --- create --------------------------------------------------------------------
   function showError(msg) { createErr.textContent = msg; show(createErr, !!msg); }
@@ -121,20 +147,26 @@
     });
   } else {
     var pTitle = $('p-title'), pLang = $('p-lang'), pTTL = $('p-ttl'), pContent = $('p-content'), pSize = $('p-size');
-    var updSize = function () { pSize.textContent = fmtSize(new Blob([pContent.value]).size); };
+    var isAnon = function () { return publicPastes && !token; };
+    var updSize = function () {
+      var n = new Blob([pContent.value]).size;
+      var over = isAnon() && anonMax && n > anonMax;
+      pSize.textContent = fmtSize(n) + (isAnon() && anonMax ? ' / ' + fmtSize(anonMax) + (over ? ' — too large for an anonymous paste' : '') : '');
+      pSize.className = 'muted small' + (over ? ' over' : '');
+    };
     pContent.addEventListener('input', updSize);
     form.addEventListener('submit', function (e) {
       e.preventDefault(); showError('');
       if (!pContent.value) { showError('nothing to paste'); return; }
+      if (isAnon() && anonMax && new Blob([pContent.value]).size > anonMax) { showError('anonymous pastes are limited to ' + fmtSize(anonMax) + ' — shorten it or unlock with the token'); return; }
       var btn = form.querySelector('button[type=submit]'); btn.disabled = true;
-      api('POST', '/api/pastes', {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'X-Title': pTitle.value.trim(), 'X-Lang': pLang.value, 'X-TTL': pTTL.value },
-        body: pContent.value
-      }).then(function (res) {
+      var hdr = { 'Content-Type': 'text/plain; charset=utf-8', 'X-Title': pTitle.value.trim(), 'X-Lang': pLang.value };
+      if (!isAnon()) hdr['X-TTL'] = pTTL.value; // anonymous pastes always get the fixed short TTL
+      api('POST', '/api/pastes', { headers: hdr, body: pContent.value }).then(function (res) {
         btn.disabled = false;
         if (!res.ok) { showError(errText(res)); return; }
-        showResult(res.data.url, fmtSize(res.data.size) + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires') + ' · raw: ' + res.data.raw_url);
-        pContent.value = ''; pTitle.value = ''; updSize(); loadList();
+        showResult(res.data.url, fmtSize(res.data.size) + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires') + (res.data.anon ? ' · anonymous' : '') + ' · raw: ' + res.data.raw_url);
+        pContent.value = ''; pTitle.value = ''; updSize(); if (token) loadList();
       }).catch(function () { btn.disabled = false; showError('network error'); });
     });
   }
@@ -185,4 +217,7 @@
     });
   }
   if (refreshBtn) refreshBtn.addEventListener('click', loadList);
+
+  // initial state: a stored token unlocks; otherwise anonymous mode (public pastes) or locked
+  if (token) { unlock(token); } else { anonMode(); }
 })();

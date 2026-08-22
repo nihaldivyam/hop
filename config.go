@@ -20,6 +20,16 @@ type Config struct {
 	DefaultPasteTTL time.Duration // HOP_DEFAULT_PASTE_TTL (0 = forever)
 	RepoURL         string        // HOP_REPO_URL — shown on the landing pages
 	TrustProxy      bool          // HOP_TRUST_PROXY — use X-Forwarded-For for client IPs
+
+	// Anonymous pastes (off by default). When on, POST /api/pastes on the paste
+	// host works without a token, inside hard limits; links always need the token.
+	PublicPastes bool          // HOP_PUBLIC_PASTES
+	AnonMaxBytes int64         // HOP_ANON_MAX_BYTES
+	AnonMaxTTL   time.Duration // HOP_ANON_MAX_TTL — anonymous pastes always expire (requested TTL is clamped)
+	AnonRateN    int           // HOP_ANON_RATE "N/period": N anonymous creates per period per client IP…
+	AnonRatePer  time.Duration //   …with a burst of AnonBurst
+	AnonBurst    int           // HOP_ANON_BURST
+	AnonDailyCap int64         // HOP_ANON_DAILY_CAP — global anonymous pastes per UTC day
 }
 
 func loadConfig() (Config, error) {
@@ -33,6 +43,13 @@ func loadConfig() (Config, error) {
 		DefaultPasteTTL: 30 * 24 * time.Hour,
 		RepoURL:         env("HOP_REPO_URL", "https://github.com/nihaldivyam/hop"),
 		TrustProxy:      env("HOP_TRUST_PROXY", "true") == "true",
+		PublicPastes:    env("HOP_PUBLIC_PASTES", "false") == "true",
+		AnonMaxBytes:    32 << 10,
+		AnonMaxTTL:      24 * time.Hour,
+		AnonRateN:       5,
+		AnonRatePer:     time.Hour,
+		AnonBurst:       2,
+		AnonDailyCap:    200,
 	}
 	if v := os.Getenv("HOP_MAX_PASTE_BYTES"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -48,7 +65,59 @@ func loadConfig() (Config, error) {
 		}
 		c.DefaultPasteTTL = d
 	}
+	if v := os.Getenv("HOP_ANON_MAX_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return c, fmt.Errorf("HOP_ANON_MAX_BYTES: %q is not a positive integer", v)
+		}
+		c.AnonMaxBytes = n
+	}
+	if v := os.Getenv("HOP_ANON_MAX_TTL"); v != "" {
+		d, err := parseTTL(v)
+		if err != nil || d <= 0 {
+			return c, fmt.Errorf("HOP_ANON_MAX_TTL: %q must be a positive duration", v)
+		}
+		c.AnonMaxTTL = d
+	}
+	if v := os.Getenv("HOP_ANON_RATE"); v != "" {
+		n, per, err := parseRate(v)
+		if err != nil {
+			return c, fmt.Errorf("HOP_ANON_RATE: %w", err)
+		}
+		c.AnonRateN, c.AnonRatePer = n, per
+	}
+	if v := os.Getenv("HOP_ANON_BURST"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return c, fmt.Errorf("HOP_ANON_BURST: %q is not a positive integer", v)
+		}
+		c.AnonBurst = n
+	}
+	if v := os.Getenv("HOP_ANON_DAILY_CAP"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return c, fmt.Errorf("HOP_ANON_DAILY_CAP: %q is not a non-negative integer", v)
+		}
+		c.AnonDailyCap = n
+	}
 	return c, nil
+}
+
+// parseRate reads "N/period" ("5/1h", "20/10m") into N creates per period.
+func parseRate(s string) (int, time.Duration, error) {
+	parts := strings.SplitN(strings.TrimSpace(s), "/", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("want N/period (e.g. 5/1h), got %q", s)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || n <= 0 {
+		return 0, 0, fmt.Errorf("want N/period (e.g. 5/1h), got %q", s)
+	}
+	per, err := parseTTL(parts[1])
+	if err != nil || per <= 0 {
+		return 0, 0, fmt.Errorf("want N/period (e.g. 5/1h), got %q", s)
+	}
+	return n, per, nil
 }
 
 func env(k, def string) string {

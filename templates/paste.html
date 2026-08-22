@@ -42,6 +42,6 @@
     <textarea readonly rows="{{.PlainRows}}" spellcheck="false">{{.Plain}}</textarea>
   </details>
 </main>
-<footer class="foot">hop · <a href="{{.Repo}}">source</a> · this view is server-rendered, no scripts</footer>
+<footer class="foot">{{if .Anon}}<span class="anon-note">anonymous paste · expires {{.Expires}} · <a href="https://divyam.top/#contact">report abuse</a></span> · {{end}}hop · <a href="{{.Repo}}">source</a> · this view is server-rendered, no scripts</footer>
 </body>
 </html>

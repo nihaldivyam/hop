@@ -7,7 +7,7 @@
 <meta name="description" content="hop: short links and pastes in one small Go binary. {{if eq .Kind "pastes"}}paste.{{else}}go.{{end}}divyam.top">
 <link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
 </head>
-<body data-kind="{{.Kind}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}">
+<body data-kind="{{.Kind}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}"{{if .PublicPastes}} data-public-pastes="1" data-anon-max-bytes="{{.AnonMaxBytes}}" data-anon-ttl="{{.AnonTTL}}"{{end}}>
 <header class="sitenav" role="banner">
   <a class="sitenav-brand" href="https://divyam.top/">Divyam Azad</a>
   <nav class="sitenav-links" aria-label="Site">
@@ -29,7 +29,7 @@
     <p class="eyebrow">hop · {{if eq .Kind "pastes"}}pastes{{else}}short links{{end}}</p>
     <h1>{{if eq .Kind "pastes"}}Pastes{{else}}Short links{{end}} <span class="dim">&amp; {{if eq .Kind "pastes"}}short links{{else}}pastes{{end}}, one small tool</span></h1>
     {{if eq .Kind "pastes"}}
-    <p class="lead"><code>https://{{.PasteHost}}/&lt;id&gt;</code> serves a piece of text — plain text for <code>curl</code>, a numbered view in a browser (<code>/&lt;id&gt;/raw</code> is always raw). Pastes are up to {{.MaxPaste}} and expire after {{.DefaultTTL}} unless you say otherwise.</p>
+    <p class="lead"><code>https://{{.PasteHost}}/&lt;id&gt;</code> serves a piece of text — plain text for <code>curl</code>, a numbered view in a browser (<code>/&lt;id&gt;/raw</code> is always raw). {{if .PublicPastes}}Anyone can paste here without an account: up to {{.AnonMax}}, gone after {{.AnonTTL}}. With the write token, pastes go up to {{.MaxPaste}} and live {{.DefaultTTL}} or forever.{{else}}Pastes are up to {{.MaxPaste}} and expire after {{.DefaultTTL}} unless you say otherwise.{{end}}</p>
     <p class="lead sub">Need a short link instead? <a href="https://{{.LinksHost}}/">{{.LinksHost}}</a></p>
     {{else}}
     <p class="lead"><code>https://{{.LinksHost}}/&lt;slug&gt;</code> redirects to a long URL you chose. Slugs can be yours (<code>/k8s</code>) or random (<code>/Xk3Pq</code>); visits are counted.</p>
@@ -40,17 +40,24 @@
   <section class="how" aria-labelledby="how-h">
     <h2 id="how-h">How it works</h2>
     <ol class="steps">
+      {{if .PublicPastes}}
+      <li><span class="n">1</span><strong>Write</strong><span>Type or drop text below — no account, no token. Anonymous pastes are capped at {{.AnonMax}} and expire after {{.AnonTTL}}.</span></li>
+      <li><span class="n">2</span><strong>Share</strong><span>Copy the URL. Reading is public (and lightly rate-limited).</span></li>
+      <li><span class="n">3</span><strong>Unlock (optional)</strong><span>With the write token you get {{.MaxPaste}}, {{.DefaultTTL}} or forever, a list of your pastes and delete.</span></li>
+      {{else}}
       <li><span class="n">1</span><strong>Unlock</strong><span>Paste your token below once — it stays in this browser and is only ever sent to this site.</span></li>
       <li><span class="n">2</span><strong>Create</strong><span>{{if eq .Kind "pastes"}}Type or drop text, pick a language and how long it should live.{{else}}Give it a URL, optionally a slug and an expiry.{{end}}</span></li>
       <li><span class="n">3</span><strong>Share</strong><span>Copy the URL. Reading is public (and lightly rate-limited); only writing needs the token.</span></li>
+      {{end}}
     </ol>
   </section>
 
   <section class="app" id="app" aria-labelledby="app-h">
     <h2 id="app-h">{{if eq .Kind "pastes"}}Create a paste{{else}}Create a short link{{end}} in the browser</h2>
-    {{if not .WritesEnabled}}<p class="flash err">Writes are disabled on this instance (no token configured).</p>{{end}}
+    {{if and (not .WritesEnabled) (not .PublicPastes)}}<p class="flash err">Writes are disabled on this instance (no token configured).</p>{{end}}
     <noscript><p class="flash">This small UI needs JavaScript. Without it, use the terminal commands below — everything works through the API.</p></noscript>
 
+    {{if not .PublicPastes}}
     <div class="card" id="token-card">
       <div class="row">
         <label class="grow">Token
@@ -61,9 +68,11 @@
       </div>
       <p class="muted small" id="token-status">Locked. The token is the <code>HOP_TOKEN</code> value — see “Where is my token” below.</p>
     </div>
+    {{end}}
 
     {{if eq .Kind "pastes"}}
-    <form class="card hidden" id="create-form" autocomplete="off">
+    <form class="card{{if not .PublicPastes}} hidden{{end}}" id="create-form" autocomplete="off">
+      {{if .PublicPastes}}<p class="badge" id="anon-badge">Anonymous — up to {{.AnonMax}}, expires in {{.AnonTTL}}. Text only.</p>{{end}}
       <div class="row">
         <label class="grow">Title <input type="text" id="p-title" maxlength="120" placeholder="optional, e.g. error.log"></label>
         <label>Language
@@ -71,7 +80,7 @@
             <option value="">text</option><option>bash</option><option>go</option><option>yaml</option><option>json</option><option>md</option><option>py</option><option>js</option><option>ts</option><option>toml</option><option>dockerfile</option><option>sql</option><option>log</option><option>diff</option>
           </select>
         </label>
-        <label>Expires
+        <label id="p-ttl-wrap"{{if .PublicPastes}} class="hidden"{{end}}>Expires
           <select id="p-ttl">
             <option value="">default ({{.DefaultTTL}})</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="365d">1 year</option><option value="0">never</option>
           </select>
@@ -81,6 +90,21 @@
       <div class="row end"><span class="muted small" id="p-size">0 B</span><button type="submit" class="btn">Create paste</button></div>
       <p class="flash err hidden" id="create-error"></p>
     </form>
+    {{if .PublicPastes}}
+    <details class="card token-details" id="token-details">
+      <summary>Have the write token? Unlock for {{.MaxPaste}}, {{.DefaultTTL}} or forever, list &amp; delete.</summary>
+      <div id="token-card">
+        <div class="row">
+          <label class="grow">Token
+            <input type="password" id="token" autocomplete="off" spellcheck="false" placeholder="paste the write token">
+          </label>
+          <button type="button" class="btn" id="unlock">Unlock</button>
+          <button type="button" class="btn ghost hidden" id="forget">Forget</button>
+        </div>
+        <p class="muted small" id="token-status">Locked. The token is the <code>HOP_TOKEN</code> value — see “Where is my token” below.</p>
+      </div>
+    </details>
+    {{end}}
     {{else}}
     <form class="card hidden" id="create-form" autocomplete="off">
       <label>Long URL <input type="url" id="l-url" required placeholder="https://…"></label>
@@ -159,7 +183,8 @@ curl -sS -H "Authorization: Bearer $HOP_TOKEN" \
   </section>
 
   <footer class="foot">
-    <p><a href="{{.Repo}}">hop source</a> · reads are public &amp; rate-limited, writes need the token, pastes expire · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
+    {{if .PublicPastes}}<p class="aup"><strong>Acceptable use:</strong> text only, no secrets, no abuse — anonymous pastes expire in {{.AnonTTL}} and can be <a href="https://divyam.top/#contact">reported</a>; the operator can see creator IPs of anonymous pastes.</p>{{end}}
+    <p><a href="{{.Repo}}">hop source</a> · reads are public &amp; rate-limited, {{if .PublicPastes}}anonymous pastes are small and short-lived, the token lifts the limits{{else}}writes need the token, pastes expire{{end}} · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
   </footer>
 
 </main>

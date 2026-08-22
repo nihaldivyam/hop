@@ -17,7 +17,9 @@ that I could drive from a terminal. It is deployed at `go.divyam.top` /
 ## Using hop
 
 Three ways, all talking to the same API. Reading a link or a paste never needs
-anything; creating one needs the write token (`HOP_TOKEN`).
+anything; creating one needs the write token (`HOP_TOKEN`) — except pastes when
+[anonymous pastes](#anonymous-pastes) are enabled, which work without a token
+inside hard limits.
 
 - **In the browser** — open `https://go.divyam.top/` or `https://paste.divyam.top/`,
   paste the token once (it stays in that browser's `localStorage` and is only sent
@@ -102,7 +104,9 @@ rendered (no HTML passthrough, so nothing to sanitise).
 
 ## HTTP API
 
-All writes need `Authorization: Bearer $HOP_TOKEN`. Reads are anonymous.
+All writes need `Authorization: Bearer $HOP_TOKEN` (the one exception is
+`POST /api/pastes` without any `Authorization` header when `HOP_PUBLIC_PASTES=true`,
+see [Anonymous pastes](#anonymous-pastes)). Reads are anonymous.
 
 | method | path | body / headers | result |
 |---|---|---|---|
@@ -110,8 +114,9 @@ All writes need `Authorization: Bearer $HOP_TOKEN`. Reads are anonymous.
 | `GET` | `/api/links` | | list (non-expired) |
 | `DELETE` | `/api/links/{slug}` | | `204` |
 | `POST` | `/api/pastes` | raw body (`text/*`, `application/octet-stream`) or multipart `file`/`content`; `X-Title`, `X-Lang`, `X-TTL` | `201 {id, url, raw_url, expires_at, size}` — `413` over the limit |
-| `GET` | `/api/pastes` | | list without content |
+| `GET` | `/api/pastes` | | list without content (`anon`, and `ip` for anonymous pastes) |
 | `DELETE` | `/api/pastes/{id}` | | `204` |
+| `DELETE` | `/api/pastes?anon=1` | | `200 {deleted}` — purge every anonymous paste |
 | `GET` | `/healthz` | | `200 ok` if the DB answers |
 
 Public side — links host: `GET /{slug}` → `302`, hits and last-use recorded.
@@ -136,6 +141,37 @@ Expired rows stop being served immediately and are deleted by a janitor every
 | `HOP_DEFAULT_PASTE_TTL` | `30d` | default paste lifetime (`0` = forever) |
 | `HOP_REPO_URL` | this repo | link shown on the landing pages |
 | `HOP_TRUST_PROXY` | `true` | use `X-Forwarded-For` for the per-IP rate limit |
+| `HOP_PUBLIC_PASTES` | `false` | accept anonymous pastes (paste host only, see below) |
+| `HOP_ANON_MAX_BYTES` | `32768` | size cap for anonymous pastes (→ `413`) |
+| `HOP_ANON_MAX_TTL` | `24h` | anonymous pastes always expire; longer/`0` requests are clamped |
+| `HOP_ANON_RATE` | `5/1h` | anonymous creates per client IP (`N/period`) |
+| `HOP_ANON_BURST` | `2` | burst allowed on top of `HOP_ANON_RATE` |
+| `HOP_ANON_DAILY_CAP` | `200` | global anonymous pastes per UTC day (→ `429 daily cap reached`) |
+
+## Anonymous pastes
+
+Off by default. With `HOP_PUBLIC_PASTES=true` the paste host's landing page
+shows the form straight away and `POST /api/pastes` without an `Authorization`
+header creates an *anonymous* paste — short links never work without the token
+(an open redirector would lend the domain to phishing). Guard rails, all
+configurable (table above):
+
+- size ≤ `HOP_ANON_MAX_BYTES` (32 KiB) → otherwise `413` naming the limit;
+- lifetime ≤ `HOP_ANON_MAX_TTL` (24 h): a requested TTL above it, or `0`/forever,
+  is silently clamped — `expires_at` in the response is the truth;
+- text only: bodies containing NUL bytes get `415`;
+- per-IP token bucket `HOP_ANON_RATE` / `HOP_ANON_BURST` → `429 {"error":"rate
+  limited","retry_after_seconds":N}` plus a `Retry-After` header;
+- a global `HOP_ANON_DAILY_CAP` per UTC day → `429 {"error":"daily cap reached"}`;
+- the creator IP is stored with anonymous pastes (only visible to token holders
+  via `GET /api/pastes` and `hop ls pastes`, never on the public view), the view
+  carries an "anonymous paste · report abuse" line and stays `noindex`;
+- a wrong token is still `401` — it never downgrades to anonymous.
+
+Handling abuse: `hop ls pastes` shows `anon <ip>`, `hop rm <id>` removes one,
+`DELETE /api/pastes?anon=1` (token) purges all anonymous pastes at once, and
+`HOP_PUBLIC_PASTES=false` + restart is the kill switch. Behind CrowdSec the 429s
+in the access log also feed its ban decisions for floods.
 
 ## Security notes
 

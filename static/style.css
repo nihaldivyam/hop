@@ -96,3 +96,12 @@ td.actions .btn { margin-left: .3rem; }
 .interstitial .foot { margin-top: 2rem; }
 /* anonymous links (public mode) */
 .anon-note { color: var(--muted); font-size: .85rem; margin: .2rem 0 0; flex-basis: 100%; }
+
+/* "name your own URL": custom id field + create page */
+.custom-id .idgroup { display: flex; align-items: stretch; }
+.custom-id .prefix { display: flex; align-items: center; padding: 0 .55rem; background: var(--card); border: 1px solid var(--line); border-right: 0; border-radius: 8px 0 0 8px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem; white-space: nowrap; }
+.custom-id input { border-radius: 0 8px 8px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.custom-id input[readonly] { color: var(--acc); background: var(--card); }
+.custom-id input:invalid { outline: 2px solid hsl(0,70%,55%); }
+.create .hero h1 .free { font-size: .8em; background: var(--card); padding: .1em .4em; border-radius: 8px; color: var(--acc); }
+.create .hero .eyebrow a { color: inherit; }

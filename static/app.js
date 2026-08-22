@@ -19,6 +19,10 @@
   var listCard = $('list-card'), listBody = document.querySelector('#list tbody'), listEmpty = $('list-empty'), refreshBtn = $('refresh');
   var anonBadge = $('anon-badge'), ttlWrap = $('p-ttl-wrap'), tokenDetails = $('token-details');
   var lSlugWrap = $('l-slug-wrap'), lTTLWrap = $('l-ttl-wrap'), lAnonNote = $('l-anon-note');
+  // "name your own URL": the create page (GET /<free-name>) pre-fills the custom id and
+  // navigates to the paste once it exists instead of showing the result card
+  var createID = body.getAttribute('data-create-id') || '';
+  var pID = $('p-id');
   if (!tokenInput || !unlockBtn || !form) return;
 
   var token = '';
@@ -60,6 +64,7 @@
     }
     if (res.status === 413) return d.error || ('too large' + (anonMax ? ' — anonymous pastes are limited to ' + fmtSize(anonMax) : ''));
     if (res.status === 415) return d.error || 'anonymous pastes must be plain text';
+    if (res.status === 409) return (d.error === 'id taken' ? 'that name is already taken — pick another one' : d.error || 'already exists');
     return d.error ? d.error : ('request failed (HTTP ' + res.status + ')');
   }
   function humanWait(sec) {
@@ -91,7 +96,8 @@
   // --- lock / unlock -----------------------------------------------------------
   function anonMode() {
     // public pastes/links: the form stays usable without a token, within the anonymous limits
-    show(form, isPublic); show(anonBadge, isPublic); show(ttlWrap, !publicPastes);
+    // (on the create page the form is always shown; without public mode it needs an unlock first)
+    show(form, isPublic || !!createID); show(anonBadge, isPublic); show(ttlWrap, !publicPastes);
     show(lSlugWrap, !publicLinks); show(lTTLWrap, !publicLinks); show(lAnonNote, publicLinks);
     show(resultCard, false); show(listCard, false); show(forgetBtn, false);
     if (publicPastes && typeof updSize === 'function') updSize();
@@ -170,11 +176,17 @@
       var btn = form.querySelector('button[type=submit]'); btn.disabled = true;
       var hdr = { 'Content-Type': 'text/plain; charset=utf-8', 'X-Title': pTitle.value.trim(), 'X-Lang': pLang.value };
       if (!isAnon()) hdr['X-TTL'] = pTTL.value; // anonymous pastes always get the fixed short TTL
+      var customID = (createID || (pID ? pID.value.trim() : ''));
+      if (customID) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$/.test(customID)) { btn.disabled = false; showError('custom URL: 1–15 letters/digits/-/_, starting with a letter or digit'); return; }
+        hdr['X-Id'] = customID;
+      }
       api('POST', '/api/pastes', { headers: hdr, body: pContent.value }).then(function (res) {
         btn.disabled = false;
         if (!res.ok) { showError(errText(res)); return; }
+        if (createID) { location.assign('/' + encodeURIComponent(res.data.id)); return; } // the page becomes the paste
         showResult(res.data.url, fmtSize(res.data.size) + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires') + (res.data.anon ? ' · anonymous' : '') + ' · raw: ' + res.data.raw_url);
-        pContent.value = ''; pTitle.value = ''; updSize(); if (token) loadList();
+        pContent.value = ''; pTitle.value = ''; if (pID) pID.value = ''; updSize(); if (token) loadList();
       }).catch(function () { btn.disabled = false; showError('network error'); });
     });
   }

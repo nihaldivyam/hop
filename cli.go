@@ -33,8 +33,9 @@ client  (config: flags > env HOP_API / HOP_TOKEN > ~/.config/hop/config.json)
   hop logout                   forget them
   hop whoami                   show the API URL and whether a token is set
   hop link <url> [slug] [--ttl 30d]       create a short link  -> prints the short URL
-  hop paste [file] [--title T] [--lang L] [--ttl 7d]
+  hop paste [file] [--title T] [--lang L] [--ttl 7d] [--id NAME]
                                create a paste from a file or stdin -> prints the URL
+                               (--id: name your own URL, 1-15 chars letters/digits/-/_)
   hop ls [links|pastes]        list what exists
   hop rm <slug-or-id> [--link|--paste]    delete (auto-detects unless forced)
   hop open <slug-or-id> [-b]   print the public URL (-b: open it in the browser)
@@ -304,6 +305,8 @@ func cmdPaste(args []string) error {
 	ttl := fs.String("ttl", "", "lifetime, e.g. 7d (default: server default, 30d)")
 	title := fs.String("title", "", "title (default: the file name)")
 	lang := fs.String("lang", "", "language hint for the HTML view (default: the file extension)")
+	id := fs.String("id", "", "name your own URL: paste.<host>/<id> (1-15 chars, letters/digits/-/_)")
+	fs.StringVar(id, "name", "", "alias of --id")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return err
@@ -330,6 +333,12 @@ func cmdPaste(args []string) error {
 	}
 	if *lang != "" {
 		hdr["X-Lang"] = *lang
+	}
+	if *id != "" {
+		if !validPasteID(*id) {
+			return usageError("--id must be " + pasteIDRule)
+		}
+		hdr["X-Id"] = *id
 	}
 	switch {
 	case *ttl != "":

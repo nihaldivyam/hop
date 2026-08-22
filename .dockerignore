@@ -1,0 +1,6 @@
+.git
+.github
+*.md
+*.db
+*.db-*
+hop

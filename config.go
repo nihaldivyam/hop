@@ -1,0 +1,87 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Config is read once from the environment; every field has a sane default so
+// `hop` with no env at all runs a local instance on :8090 with ./hop.db.
+type Config struct {
+	Listen          string        // HOP_LISTEN
+	DBPath          string        // HOP_DB
+	Token           string        // HOP_TOKEN — bearer token for all writes; empty disables writes
+	LinksHost       string        // HOP_LINKS_HOST — host that serves short links
+	PasteHost       string        // HOP_PASTE_HOST — host that serves pastes
+	MaxPasteBytes   int64         // HOP_MAX_PASTE_BYTES
+	DefaultPasteTTL time.Duration // HOP_DEFAULT_PASTE_TTL (0 = forever)
+	RepoURL         string        // HOP_REPO_URL — shown on the landing pages
+	TrustProxy      bool          // HOP_TRUST_PROXY — use X-Forwarded-For for client IPs
+}
+
+func loadConfig() (Config, error) {
+	c := Config{
+		Listen:          env("HOP_LISTEN", ":8090"),
+		DBPath:          env("HOP_DB", "/data/hop.db"),
+		Token:           os.Getenv("HOP_TOKEN"),
+		LinksHost:       strings.ToLower(env("HOP_LINKS_HOST", "go.divyam.top")),
+		PasteHost:       strings.ToLower(env("HOP_PASTE_HOST", "paste.divyam.top")),
+		MaxPasteBytes:   256 << 10,
+		DefaultPasteTTL: 30 * 24 * time.Hour,
+		RepoURL:         env("HOP_REPO_URL", "https://github.com/nihaldivyam/hop"),
+		TrustProxy:      env("HOP_TRUST_PROXY", "true") == "true",
+	}
+	if v := os.Getenv("HOP_MAX_PASTE_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return c, fmt.Errorf("HOP_MAX_PASTE_BYTES: %q is not a positive integer", v)
+		}
+		c.MaxPasteBytes = n
+	}
+	if v := os.Getenv("HOP_DEFAULT_PASTE_TTL"); v != "" {
+		d, err := parseTTL(v)
+		if err != nil {
+			return c, fmt.Errorf("HOP_DEFAULT_PASTE_TTL: %w", err)
+		}
+		c.DefaultPasteTTL = d
+	}
+	return c, nil
+}
+
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// parseTTL accepts Go durations ("90m", "36h") plus "d" and "w" suffixes
+// ("7d", "2w"). "0" means no expiry. Negative values are rejected.
+func parseTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+	var mult time.Duration
+	switch {
+	case strings.HasSuffix(s, "d"):
+		mult = 24 * time.Hour
+	case strings.HasSuffix(s, "w"):
+		mult = 7 * 24 * time.Hour
+	}
+	if mult != 0 {
+		n, err := strconv.ParseFloat(s[:len(s)-1], 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("bad ttl %q", s)
+		}
+		return time.Duration(n * float64(mult)), nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("bad ttl %q", s)
+	}
+	return d, nil
+}

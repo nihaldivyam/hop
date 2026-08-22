@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .P.Title}}{{.P.Title}}{{else}}paste {{.P.ID}}{{end}} — hop</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="bar">
+  <span class="title">{{if .P.Title}}{{.P.Title}}{{else}}{{.P.ID}}{{end}}</span>
+  <span class="meta">{{if .Lang}}<span class="tag">{{.Lang}}</span>{{end}} {{.Size}} · {{.P.CreatedAt.Format "2006-01-02 15:04 UTC"}}{{if .P.ExpiresAt}} · expires {{.P.ExpiresAt.Format "2006-01-02"}}{{end}} · <a href="{{.RawURL}}">raw</a></span>
+</header>
+<main>
+<ol class="lines">{{range .Lines}}<li><span>{{.}}</span></li>
+{{end}}</ol>
+</main>
+<footer class="muted">hop · <a href="{{.Repo}}">source</a></footer>
+</body>
+</html>

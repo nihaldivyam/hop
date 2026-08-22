@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hop — {{if eq .Kind "pastes"}}pastes{{else}}short links{{end}}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="landing">
+  <h1>hop</h1>
+  {{if eq .Kind "pastes"}}
+  <p>This host serves <strong>pastes</strong>: <code>https://{{.PasteHost}}/&lt;id&gt;</code> (text), <code>/&lt;id&gt;/raw</code>, or open it in a browser for a numbered view.</p>
+  {{else}}
+  <p>This host serves <strong>short links</strong>: <code>https://{{.LinksHost}}/&lt;slug&gt;</code> redirects somewhere. There is nothing else to see here.</p>
+  {{end}}
+  <p class="muted">Creating links and pastes needs a token; the public side is read-only and lightly rate-limited. Source: <a href="{{.Repo}}">{{.Repo}}</a></p>
+</main>
+</body>
+</html>

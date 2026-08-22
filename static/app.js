@@ -6,6 +6,9 @@
   var kind = body.getAttribute('data-kind') === 'pastes' ? 'pastes' : 'links';
   // public pastes mode: the paste host accepts anonymous creates (small, short-lived)
   var publicPastes = kind === 'pastes' && body.getAttribute('data-public-pastes') === '1';
+  // public links mode: the links host accepts anonymous creates (random slug, short-lived)
+  var publicLinks = kind === 'links' && body.getAttribute('data-public-links') === '1';
+  var isPublic = publicPastes || publicLinks;
   var anonMax = parseInt(body.getAttribute('data-anon-max-bytes') || '0', 10) || 0;
   var anonTTL = body.getAttribute('data-anon-ttl') || '';
   var KEY = 'hop.token';
@@ -15,6 +18,7 @@
   var resultCard = $('result-card'), resultURL = $('result-url'), resultMeta = $('result-meta'), copyResult = $('copy-result');
   var listCard = $('list-card'), listBody = document.querySelector('#list tbody'), listEmpty = $('list-empty'), refreshBtn = $('refresh');
   var anonBadge = $('anon-badge'), ttlWrap = $('p-ttl-wrap'), tokenDetails = $('token-details');
+  var lSlugWrap = $('l-slug-wrap'), lTTLWrap = $('l-ttl-wrap'), lAnonNote = $('l-anon-note');
   if (!tokenInput || !unlockBtn || !form) return;
 
   var token = '';
@@ -52,7 +56,7 @@
     if (res.status === 503) return 'writes are disabled on this instance';
     if (res.status === 429) {
       if (d.retry_after_seconds) return 'rate limited — try again in ' + humanWait(d.retry_after_seconds) + (token ? '' : ' (or unlock with the token)');
-      return d.error === 'daily cap reached' ? 'the anonymous paste budget for today is used up — try tomorrow or unlock with the token' : 'slow down — rate limited';
+      return d.error === 'daily cap reached' ? 'the anonymous budget for today is used up — try tomorrow or unlock with the token' : 'slow down — rate limited';
     }
     if (res.status === 413) return d.error || ('too large' + (anonMax ? ' — anonymous pastes are limited to ' + fmtSize(anonMax) : ''));
     if (res.status === 415) return d.error || 'anonymous pastes must be plain text';
@@ -86,8 +90,9 @@
 
   // --- lock / unlock -----------------------------------------------------------
   function anonMode() {
-    // public pastes: the form stays usable without a token, within the anonymous limits
-    show(form, publicPastes); show(anonBadge, publicPastes); show(ttlWrap, !publicPastes);
+    // public pastes/links: the form stays usable without a token, within the anonymous limits
+    show(form, isPublic); show(anonBadge, isPublic); show(ttlWrap, !publicPastes);
+    show(lSlugWrap, !publicLinks); show(lTTLWrap, !publicLinks); show(lAnonNote, publicLinks);
     show(resultCard, false); show(listCard, false); show(forgetBtn, false);
     if (publicPastes && typeof updSize === 'function') updSize();
   }
@@ -101,9 +106,10 @@
   function unlocked() {
     show(form, true); show(listCard, true); show(forgetBtn, true);
     show(anonBadge, false); show(ttlWrap, true);
+    show(lSlugWrap, true); show(lTTLWrap, true); show(lAnonNote, false);
     if (tokenDetails) tokenDetails.open = true;
     tokenInput.value = '••••••••••••'; tokenInput.disabled = true; unlockBtn.disabled = true;
-    setStatus('Unlocked — full limits, and your pastes are listed below. The token is stored in this browser only.', 'ok');
+    setStatus('Unlocked — full limits, and your ' + kind + ' are listed below. The token is stored in this browser only.', 'ok');
     if (typeof updSize === 'function') updSize();
     loadList();
   }
@@ -131,18 +137,20 @@
 
   if (kind === 'links') {
     var lURL = $('l-url'), lSlug = $('l-slug'), lTTL = $('l-ttl');
+    var isAnonLink = function () { return publicLinks && !token; };
     form.addEventListener('submit', function (e) {
       e.preventDefault(); showError('');
       var payload = { url: lURL.value.trim() };
-      if (lSlug.value.trim()) payload.slug = lSlug.value.trim();
-      if (lTTL.value) payload.ttl = lTTL.value;
+      // anonymous links: random slug and the fixed short TTL, decided by the server
+      if (!isAnonLink() && lSlug.value.trim()) payload.slug = lSlug.value.trim();
+      if (!isAnonLink() && lTTL.value) payload.ttl = lTTL.value;
       var btn = form.querySelector('button[type=submit]'); btn.disabled = true;
       api('POST', '/api/links', { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
         .then(function (res) {
           btn.disabled = false;
           if (!res.ok) { showError(errText(res)); return; }
-          showResult(res.data.short_url, '→ ' + res.data.url + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires'));
-          lURL.value = ''; lSlug.value = ''; loadList();
+          showResult(res.data.short_url, '→ ' + res.data.url + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires') + (res.data.anon ? ' · anonymous (visitors see a confirmation page first)' : ''));
+          lURL.value = ''; lSlug.value = ''; if (token) loadList();
         }).catch(function () { btn.disabled = false; showError('network error'); });
     });
   } else {

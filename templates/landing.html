@@ -7,7 +7,7 @@
 <meta name="description" content="hop: short links and pastes in one small Go binary. {{if eq .Kind "pastes"}}paste.{{else}}go.{{end}}divyam.top">
 <link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
 </head>
-<body data-kind="{{.Kind}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}"{{if .PublicPastes}} data-public-pastes="1" data-anon-max-bytes="{{.AnonMaxBytes}}" data-anon-ttl="{{.AnonTTL}}"{{end}}>
+<body data-kind="{{.Kind}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}"{{if .PublicPastes}} data-public-pastes="1" data-anon-max-bytes="{{.AnonMaxBytes}}" data-anon-ttl="{{.AnonTTL}}"{{end}}{{if .PublicLinks}} data-public-links="1" data-anon-link-ttl="{{.AnonLinkTTL}}"{{end}}>
 <header class="sitenav" role="banner">
   <a class="sitenav-brand" href="https://divyam.top/">Divyam Azad</a>
   <nav class="sitenav-links" aria-label="Site">
@@ -32,7 +32,7 @@
     <p class="lead"><code>https://{{.PasteHost}}/&lt;id&gt;</code> serves a piece of text — plain text for <code>curl</code>, a numbered view in a browser (<code>/&lt;id&gt;/raw</code> is always raw). {{if .PublicPastes}}Anyone can paste here without an account: up to {{.AnonMax}}, gone after {{.AnonTTL}}. With the write token, pastes go up to {{.MaxPaste}} and live {{.DefaultTTL}} or forever.{{else}}Pastes are up to {{.MaxPaste}} and expire after {{.DefaultTTL}} unless you say otherwise.{{end}}</p>
     <p class="lead sub">Need a short link instead? <a href="https://{{.LinksHost}}/">{{.LinksHost}}</a></p>
     {{else}}
-    <p class="lead"><code>https://{{.LinksHost}}/&lt;slug&gt;</code> redirects to a long URL you chose. Slugs can be yours (<code>/k8s</code>) or random (<code>/Xk3Pq</code>); visits are counted.</p>
+    <p class="lead"><code>https://{{.LinksHost}}/&lt;slug&gt;</code> redirects to a long URL you chose. Slugs can be yours (<code>/k8s</code>) or random (<code>/Xk3Pq</code>); visits are counted.{{if .PublicLinks}} Anyone can make one here without an account: random slug, gone after {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, and visitors see a confirmation page naming the destination before they are sent on{{end}}. With the write token, links get custom slugs, any lifetime and a direct redirect.{{end}}</p>
     <p class="lead sub">Need to share text instead? <a href="https://{{.PasteHost}}/">{{.PasteHost}}</a></p>
     {{end}}
   </section>
@@ -44,6 +44,10 @@
       <li><span class="n">1</span><strong>Write</strong><span>Type or drop text below — no account, no token. Anonymous pastes are capped at {{.AnonMax}} and expire after {{.AnonTTL}}.</span></li>
       <li><span class="n">2</span><strong>Share</strong><span>Copy the URL. Reading is public (and lightly rate-limited).</span></li>
       <li><span class="n">3</span><strong>Unlock (optional)</strong><span>With the write token you get {{.MaxPaste}}, {{.DefaultTTL}} or forever, a list of your pastes and delete.</span></li>
+      {{else if .PublicLinks}}
+      <li><span class="n">1</span><strong>Shorten</strong><span>Paste a long http(s) URL below — no account, no token. Anonymous links get a random slug and expire after {{.AnonLinkTTL}}.</span></li>
+      <li><span class="n">2</span><strong>Share</strong><span>Copy the short URL.{{if .AnonLinkInterstitial}} People who open it see where it leads and click Continue.{{end}}</span></li>
+      <li><span class="n">3</span><strong>Unlock (optional)</strong><span>With the write token you get custom slugs, longer or permanent links, a direct redirect, a list of your links and delete.</span></li>
       {{else}}
       <li><span class="n">1</span><strong>Unlock</strong><span>Paste your token below once — it stays in this browser and is only ever sent to this site.</span></li>
       <li><span class="n">2</span><strong>Create</strong><span>{{if eq .Kind "pastes"}}Type or drop text, pick a language and how long it should live.{{else}}Give it a URL, optionally a slug and an expiry.{{end}}</span></li>
@@ -54,10 +58,10 @@
 
   <section class="app" id="app" aria-labelledby="app-h">
     <h2 id="app-h">{{if eq .Kind "pastes"}}Create a paste{{else}}Create a short link{{end}} in the browser</h2>
-    {{if and (not .WritesEnabled) (not .PublicPastes)}}<p class="flash err">Writes are disabled on this instance (no token configured).</p>{{end}}
+    {{if and (not .WritesEnabled) (not .Public)}}<p class="flash err">Writes are disabled on this instance (no token configured).</p>{{end}}
     <noscript><p class="flash">This small UI needs JavaScript. Without it, use the terminal commands below — everything works through the API.</p></noscript>
 
-    {{if not .PublicPastes}}
+    {{if not .Public}}
     <div class="card" id="token-card">
       <div class="row">
         <label class="grow">Token
@@ -106,19 +110,36 @@
     </details>
     {{end}}
     {{else}}
-    <form class="card hidden" id="create-form" autocomplete="off">
+    <form class="card{{if not .PublicLinks}} hidden{{end}}" id="create-form" autocomplete="off">
+      {{if .PublicLinks}}<p class="badge" id="anon-badge">Anonymous — random slug, expires in {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, opens a confirmation page first{{end}}.</p>{{end}}
       <label>Long URL <input type="url" id="l-url" required placeholder="https://…"></label>
       <div class="row">
-        <label class="grow">Slug <input type="text" id="l-slug" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="optional, e.g. k8s (random if empty)"></label>
-        <label>Expires
+        <label class="grow{{if .PublicLinks}} hidden{{end}}" id="l-slug-wrap">Slug <input type="text" id="l-slug" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="optional, e.g. k8s (random if empty)"></label>
+        <label id="l-ttl-wrap"{{if .PublicLinks}} class="hidden"{{end}}>Expires
           <select id="l-ttl">
             <option value="">never</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="365d">1 year</option>
           </select>
         </label>
+        {{if .PublicLinks}}<p class="anon-note" id="l-anon-note">Custom slugs, longer or permanent links and a direct redirect need the write token. Anonymous links expire in {{.AnonLinkTTL}}.</p>{{end}}
       </div>
       <div class="row end"><button type="submit" class="btn">Create short link</button></div>
       <p class="flash err hidden" id="create-error"></p>
     </form>
+    {{if .PublicLinks}}
+    <details class="card token-details" id="token-details">
+      <summary>Have the write token? Unlock for custom slugs, longer or permanent links without the confirmation page, list &amp; delete.</summary>
+      <div id="token-card">
+        <div class="row">
+          <label class="grow">Token
+            <input type="password" id="token" autocomplete="off" spellcheck="false" placeholder="paste the write token">
+          </label>
+          <button type="button" class="btn" id="unlock">Unlock</button>
+          <button type="button" class="btn ghost hidden" id="forget">Forget</button>
+        </div>
+        <p class="muted small" id="token-status">Locked. The token is the <code>HOP_TOKEN</code> value — see “Where is my token” below.</p>
+      </div>
+    </details>
+    {{end}}
     {{end}}
 
     <div class="card ok hidden" id="result-card">
@@ -184,7 +205,8 @@ curl -sS -H "Authorization: Bearer $HOP_TOKEN" \
 
   <footer class="foot">
     {{if .PublicPastes}}<p class="aup"><strong>Acceptable use:</strong> text only, no secrets, no abuse — anonymous pastes expire in {{.AnonTTL}} and can be <a href="https://divyam.top/#contact">reported</a>; the operator can see creator IPs of anonymous pastes.</p>{{end}}
-    <p><a href="{{.Repo}}">hop source</a> · reads are public &amp; rate-limited, {{if .PublicPastes}}anonymous pastes are small and short-lived, the token lifts the limits{{else}}writes need the token, pastes expire{{end}} · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
+    {{if .PublicLinks}}<p class="aup"><strong>Acceptable use:</strong> http(s) only, no phishing, no abuse — anonymous links expire in {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, show a confirmation page{{end}} and can be <a href="https://divyam.top/#contact">reported</a>; the operator can see creator IPs of anonymous links.</p>{{end}}
+    <p><a href="{{.Repo}}">hop source</a> · reads are public &amp; rate-limited, {{if .PublicPastes}}anonymous pastes are small and short-lived, the token lifts the limits{{else if .PublicLinks}}anonymous links are short-lived and confirmed, the token lifts the limits{{else}}writes need the token, pastes expire{{end}} · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
   </footer>
 
 </main>

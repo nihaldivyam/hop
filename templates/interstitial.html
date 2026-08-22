@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Leaving via an anonymous short link — hop</title>
+<link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
+</head>
+<body>
+<header class="sitenav" role="banner">
+  <a class="sitenav-brand" href="https://divyam.top/">Divyam Azad</a>
+  <nav class="sitenav-links" aria-label="Site">
+    <a href="https://divyam.top/#about">About</a>
+    <a href="https://divyam.top/#resume">Resume</a>
+    <a href="https://divyam.top/#portfolio">Portfolio</a>
+    <a href="https://divyam.top/#contact">Contact</a>
+    <a href="https://divyam.top/blog/">Blog</a>
+    <a href="https://divyam.top/control/">Control</a>
+    <a href="https://status.divyam.top/">Status</a>
+    <a href="https://security.divyam.top/">Security</a>
+    <a href="https://github.com/nihaldivyam" rel="me">GitHub</a>
+  </nav>
+</header>
+<main class="landing interstitial">
+  <p class="eyebrow">hop · short links</p>
+  <h1>You're about to leave via an anonymous short link</h1>
+  <p class="lead"><code>https://{{.LinksHost}}/{{.Slug}}</code> was created anonymously. It points to:</p>
+  <p class="dest"><strong>{{.Host}}</strong><br><span class="full">{{.URL}}</span></p>
+  <p class="actions"><a class="btn go" href="{{.GoURL}}" rel="noreferrer noopener">Continue →</a> <a class="btn ghost" href="/">Back to {{.LinksHost}}</a></p>
+  <p class="muted small">created {{.Created}} ago · expires {{.Expires}} · not checked by anyone — if this looks like phishing or abuse, <a href="https://divyam.top/#contact">report it</a>.</p>
+  <footer class="foot"><p><a href="{{.Repo}}">hop source</a> · anonymous links show this page first; links created with the token redirect directly</p></footer>
+</main>
+</body>
+</html>

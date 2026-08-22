@@ -30,6 +30,17 @@ type Config struct {
 	AnonRatePer  time.Duration //   …with a burst of AnonBurst
 	AnonBurst    int           // HOP_ANON_BURST
 	AnonDailyCap int64         // HOP_ANON_DAILY_CAP — global anonymous pastes per UTC day
+
+	// Anonymous short links (off by default). When on, POST /api/links on the
+	// links host works without a token: random slug only, short-lived, rate
+	// limited, and (by default) served through a confirmation page first.
+	PublicLinks          bool          // HOP_PUBLIC_LINKS
+	AnonLinkMaxTTL       time.Duration // HOP_ANON_LINK_MAX_TTL — anonymous links always expire (requested TTL is clamped)
+	AnonLinkRateN        int           // HOP_ANON_LINK_RATE "N/period" per client IP…
+	AnonLinkRatePer      time.Duration //   …with a burst of AnonLinkBurst
+	AnonLinkBurst        int           // HOP_ANON_LINK_BURST
+	AnonLinkDailyCap     int64         // HOP_ANON_LINK_DAILY_CAP — global anonymous links per UTC day
+	AnonLinkInterstitial bool          // HOP_ANON_LINK_INTERSTITIAL — browsers see a confirmation page before an anonymous redirect
 }
 
 func loadConfig() (Config, error) {
@@ -50,6 +61,14 @@ func loadConfig() (Config, error) {
 		AnonRatePer:     time.Hour,
 		AnonBurst:       2,
 		AnonDailyCap:    200,
+
+		PublicLinks:          env("HOP_PUBLIC_LINKS", "false") == "true",
+		AnonLinkMaxTTL:       7 * 24 * time.Hour,
+		AnonLinkRateN:        5,
+		AnonLinkRatePer:      time.Hour,
+		AnonLinkBurst:        2,
+		AnonLinkDailyCap:     200,
+		AnonLinkInterstitial: env("HOP_ANON_LINK_INTERSTITIAL", "true") == "true",
 	}
 	if v := os.Getenv("HOP_MAX_PASTE_BYTES"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -99,6 +118,34 @@ func loadConfig() (Config, error) {
 			return c, fmt.Errorf("HOP_ANON_DAILY_CAP: %q is not a non-negative integer", v)
 		}
 		c.AnonDailyCap = n
+	}
+	if v := os.Getenv("HOP_ANON_LINK_MAX_TTL"); v != "" {
+		d, err := parseTTL(v)
+		if err != nil || d <= 0 {
+			return c, fmt.Errorf("HOP_ANON_LINK_MAX_TTL: %q must be a positive duration", v)
+		}
+		c.AnonLinkMaxTTL = d
+	}
+	if v := os.Getenv("HOP_ANON_LINK_RATE"); v != "" {
+		n, per, err := parseRate(v)
+		if err != nil {
+			return c, fmt.Errorf("HOP_ANON_LINK_RATE: %w", err)
+		}
+		c.AnonLinkRateN, c.AnonLinkRatePer = n, per
+	}
+	if v := os.Getenv("HOP_ANON_LINK_BURST"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return c, fmt.Errorf("HOP_ANON_LINK_BURST: %q is not a positive integer", v)
+		}
+		c.AnonLinkBurst = n
+	}
+	if v := os.Getenv("HOP_ANON_LINK_DAILY_CAP"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return c, fmt.Errorf("HOP_ANON_LINK_DAILY_CAP: %q is not a non-negative integer", v)
+		}
+		c.AnonLinkDailyCap = n
 	}
 	return c, nil
 }

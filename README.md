@@ -17,9 +17,9 @@ that I could drive from a terminal. It is deployed at `go.divyam.top` /
 ## Using hop
 
 Three ways, all talking to the same API. Reading a link or a paste never needs
-anything; creating one needs the write token (`HOP_TOKEN`) — except pastes when
-[anonymous pastes](#anonymous-pastes) are enabled, which work without a token
-inside hard limits.
+anything; creating one needs the write token (`HOP_TOKEN`) — except when
+[anonymous pastes](#anonymous-pastes) / [anonymous short links](#anonymous-short-links)
+are enabled, which work without a token inside hard limits.
 
 - **In the browser** — open `https://go.divyam.top/` or `https://paste.divyam.top/`,
   paste the token once (it stays in that browser's `localStorage` and is only sent
@@ -104,22 +104,26 @@ rendered (no HTML passthrough, so nothing to sanitise).
 
 ## HTTP API
 
-All writes need `Authorization: Bearer $HOP_TOKEN` (the one exception is
-`POST /api/pastes` without any `Authorization` header when `HOP_PUBLIC_PASTES=true`,
-see [Anonymous pastes](#anonymous-pastes)). Reads are anonymous.
+All writes need `Authorization: Bearer $HOP_TOKEN` (the exceptions are
+`POST /api/pastes` / `POST /api/links` without any `Authorization` header when
+`HOP_PUBLIC_PASTES=true` / `HOP_PUBLIC_LINKS=true`, see [Anonymous pastes](#anonymous-pastes)
+and [Anonymous short links](#anonymous-short-links)). Reads are anonymous.
 
 | method | path | body / headers | result |
 |---|---|---|---|
-| `POST` | `/api/links` | `{"url", "slug"?, "ttl"?}` | `201 {slug, short_url, url, expires_at}` — `409` if the slug is taken |
-| `GET` | `/api/links` | | list (non-expired) |
+| `POST` | `/api/links` | `{"url", "slug"?, "ttl"?}` | `201 {slug, short_url, url, expires_at, anon}` — `409` if the slug is taken |
+| `GET` | `/api/links` | | list (non-expired; `anon`, and `ip` for anonymous links) |
 | `DELETE` | `/api/links/{slug}` | | `204` |
+| `DELETE` | `/api/links?anon=1` | | `200 {deleted}` — purge every anonymous link |
 | `POST` | `/api/pastes` | raw body (`text/*`, `application/octet-stream`) or multipart `file`/`content`; `X-Title`, `X-Lang`, `X-TTL` | `201 {id, url, raw_url, expires_at, size}` — `413` over the limit |
 | `GET` | `/api/pastes` | | list without content (`anon`, and `ip` for anonymous pastes) |
 | `DELETE` | `/api/pastes/{id}` | | `204` |
 | `DELETE` | `/api/pastes?anon=1` | | `200 {deleted}` — purge every anonymous paste |
 | `GET` | `/healthz` | | `200 ok` if the DB answers |
 
-Public side — links host: `GET /{slug}` → `302`, hits and last-use recorded.
+Public side — links host: `GET /{slug}` → `302`, hits and last-use recorded
+(anonymous links: browsers get a `200` confirmation page first, `GET /{slug}/go`
+does the redirect — see [Anonymous short links](#anonymous-short-links)).
 Pastes host: `GET /{id}` → `text/plain`; `GET /{id}.{ext}`, `?html=1` or a
 browser `Accept: text/html` → a dark, numbered HTML view; `GET /{id}/raw` →
 always plain text. `GET /` on either host is a one-paragraph landing page.
@@ -147,6 +151,12 @@ Expired rows stop being served immediately and are deleted by a janitor every
 | `HOP_ANON_RATE` | `5/1h` | anonymous creates per client IP (`N/period`) |
 | `HOP_ANON_BURST` | `2` | burst allowed on top of `HOP_ANON_RATE` |
 | `HOP_ANON_DAILY_CAP` | `200` | global anonymous pastes per UTC day (→ `429 daily cap reached`) |
+| `HOP_PUBLIC_LINKS` | `false` | accept anonymous short links (links host only, see below) |
+| `HOP_ANON_LINK_MAX_TTL` | `7d` | anonymous links always expire; longer/`0` requests are clamped |
+| `HOP_ANON_LINK_RATE` | `5/1h` | anonymous link creates per client IP (`N/period`; separate bucket from pastes) |
+| `HOP_ANON_LINK_BURST` | `2` | burst allowed on top of `HOP_ANON_LINK_RATE` |
+| `HOP_ANON_LINK_DAILY_CAP` | `200` | global anonymous links per UTC day (→ `429 daily cap reached`) |
+| `HOP_ANON_LINK_INTERSTITIAL` | `true` | browsers see a confirmation page before an anonymous redirect |
 
 ## Anonymous pastes
 
@@ -172,6 +182,40 @@ Handling abuse: `hop ls pastes` shows `anon <ip>`, `hop rm <id>` removes one,
 `DELETE /api/pastes?anon=1` (token) purges all anonymous pastes at once, and
 `HOP_PUBLIC_PASTES=false` + restart is the kill switch. Behind CrowdSec the 429s
 in the access log also feed its ban decisions for floods.
+
+## Anonymous short links
+
+Off by default — an open redirector lends the domain to phishing, so this is
+deliberately narrower than anonymous pastes. With `HOP_PUBLIC_LINKS=true` the
+links host's landing page shows the form straight away and `POST /api/links`
+without an `Authorization` header creates an *anonymous* link:
+
+- **random slug only** (6 chars, one longer than token slugs); a `slug` in the
+  request is `400` — custom slugs need the token;
+- destination must be absolute http(s), ≤ 2048 chars, without credentials
+  (`user:pass@`), and must not point at `localhost`, private/loopback/link-local
+  IP literals, or hop itself → `400`;
+- lifetime ≤ `HOP_ANON_LINK_MAX_TTL` (7 d): longer or `0` is clamped —
+  `expires_at` in the response is the truth;
+- per-IP token bucket `HOP_ANON_LINK_RATE` / `HOP_ANON_LINK_BURST` (its own
+  bucket, separate from pastes) → `429 {"error":"rate limited","retry_after_seconds":N}`
+  with `Retry-After`; a global `HOP_ANON_LINK_DAILY_CAP` per UTC day → `429 {"error":"daily cap reached"}`;
+- **confirmation page**: with `HOP_ANON_LINK_INTERSTITIAL=true` (default) a
+  browser opening `/{slug}` gets a `200` page that shows the full destination
+  (host in bold), "created … ago · expires …", a *report abuse* link, and a
+  **Continue →** button to `/{slug}/go`, which performs the `302` (and counts
+  the hit). The page is `noindex`, `no-referrer`, `no-store`, no scripts, strict
+  CSP. Non-browser clients (`curl`, no `Accept: text/html`) get the `302`
+  directly — people are the concern, not scanners. Token-created links always
+  redirect directly;
+- the creator IP is stored with anonymous links (visible to token holders via
+  `GET /api/links` and `hop ls links`, never publicly); a wrong token is still
+  `401`, it never downgrades to anonymous.
+
+Handling abuse: `hop ls links` shows `anon <ip>`, `hop rm <slug>` removes one,
+`DELETE /api/links?anon=1` (token) purges all anonymous links at once, and
+`HOP_PUBLIC_LINKS=false` + restart is the kill switch (or set
+`HOP_ANON_LINK_INTERSTITIAL=false` to drop only the confirmation page).
 
 ## Security notes
 

@@ -351,6 +351,8 @@ type linkRow struct {
 	ShortURL  string     `json:"short_url"`
 	Hits      int64      `json:"hits"`
 	ExpiresAt *time.Time `json:"expires_at"`
+	Anon      bool       `json:"anon"`
+	IP        string     `json:"ip"`
 }
 
 type pasteRow struct {
@@ -398,9 +400,16 @@ func cmdList(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(tw, "SLUG\tHITS\tEXPIRES\tTARGET")
+		fmt.Fprintln(tw, "SLUG\tHITS\tEXPIRES\tANON\tTARGET")
 		for _, l := range ls {
-			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", l.Slug, l.Hits, expires(l.ExpiresAt), l.URL)
+			anon := "-"
+			if l.Anon {
+				anon = "anon"
+				if l.IP != "" {
+					anon += " " + l.IP
+				}
+			}
+			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", l.Slug, l.Hits, expires(l.ExpiresAt), anon, l.URL)
 		}
 		if len(ls) == 0 {
 			fmt.Fprintln(tw, "(no links)")

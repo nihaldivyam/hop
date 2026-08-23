@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"reflect"
 	"testing"
 )
@@ -126,5 +127,39 @@ func TestAdminOnlyAppliesToSessions(t *testing.T) {
 	}
 	if stray.canSeeAll() {
 		t.Fatal("anon principal could see everything")
+	}
+}
+
+// A "Sign up" button that links straight at the provider's login page is not a
+// sign-up flow: with no auth request in flight the provider has nothing to do and
+// bounces the visitor to its default redirect, which reads as a dead button.
+// /login?signup=1 starts a real authorization request carrying prompt=create.
+func TestSignupStartsRegistrationFlow(t *testing.T) {
+	e := accountsServer(t, nil)
+	for _, tc := range []struct {
+		name, query string
+		wantPrompt  bool
+	}{
+		{"plain login", "", false},
+		{"signup", "?signup=1", true},
+		{"signup=0 is not signup", "?signup=0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := do(t, e.ts, "GET", "paste.example", "/login"+tc.query, "", "", nil, nil)
+			if r.StatusCode != 302 {
+				t.Fatalf("status = %d, want 302", r.StatusCode)
+			}
+			q, err := url.Parse(r.Header.Get("Location"))
+			if err != nil {
+				t.Fatalf("bad Location: %v", err)
+			}
+			if got := q.Query().Get("prompt") == "create"; got != tc.wantPrompt {
+				t.Fatalf("prompt=create present = %v, want %v (Location: %s)", got, tc.wantPrompt, q)
+			}
+			// PKCE must survive whichever branch we took.
+			if q.Query().Get("code_challenge") == "" {
+				t.Errorf("PKCE challenge missing from %s", q)
+			}
+		})
 	}
 }

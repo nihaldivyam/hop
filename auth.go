@@ -524,7 +524,16 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	conf := s.oauthConfig(r)
 	conf.RedirectURL = st.Redirect
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, conf.AuthCodeURL(st.State, oauth2.S256ChallengeOption(st.Verifier)), http.StatusFound)
+	opts := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(st.Verifier)}
+	// ?signup=1 asks the provider to open its registration form instead of the
+	// sign-in form (OIDC "Initiating User Registration"). A "Sign up" button cannot
+	// just link at the provider's login page: with no auth request in flight there is
+	// nothing to sign in to, and the provider bounces the visitor to its default
+	// redirect — which looks exactly like the button doing nothing.
+	if r.URL.Query().Get("signup") == "1" {
+		opts = append(opts, oauth2.SetAuthURLParam("prompt", "create"))
+	}
+	http.Redirect(w, r, conf.AuthCodeURL(st.State, opts...), http.StatusFound)
 }
 
 func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {

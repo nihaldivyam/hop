@@ -677,7 +677,7 @@ func (s *Server) purgeLinks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
-	switch err := s.st.DeleteLink(r.Context(), r.PathValue("slug"), principalFrom(r.Context()).ownerScope()); {
+	switch err := s.st.DeleteLink(r.Context(), r.PathValue("slug"), principalFrom(r.Context()).viewScope()); {
 	case errors.Is(err, errNotFound):
 		jsonErr(w, http.StatusNotFound, "no such slug")
 	case err != nil:
@@ -689,7 +689,7 @@ func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
 	p := principalFrom(r.Context())
-	ls, err := s.st.ListLinks(r.Context(), p.ownerScope())
+	ls, err := s.st.ListLinks(r.Context(), p.viewScope())
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "storage error")
 		return
@@ -701,10 +701,10 @@ func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
 			"slug": l.Slug, "short_url": "https://" + s.cfg.LinksHost + "/" + l.Slug, "url": l.URL,
 			"created_at": l.CreatedAt, "expires_at": l.ExpiresAt, "hits": l.Hits, "last_used": l.LastUsed, "anon": l.Anon,
 		}
-		if l.Anon && p.isOwner() {
+		if l.Anon && p.canSeeAll() {
 			row["ip"] = l.IP // the owner sees who created anonymous links; nobody else does
 		}
-		if l.OwnerSub != "" && p.isOwner() {
+		if l.OwnerSub != "" && p.canSeeAll() {
 			row["owner_sub"] = l.OwnerSub
 		}
 		out = append(out, row)
@@ -941,7 +941,7 @@ func readPasteBody(r *http.Request, limit int64) (body []byte, title, lang strin
 }
 
 func (s *Server) deletePaste(w http.ResponseWriter, r *http.Request) {
-	switch err := s.st.DeletePaste(r.Context(), r.PathValue("id"), principalFrom(r.Context()).ownerScope()); {
+	switch err := s.st.DeletePaste(r.Context(), r.PathValue("id"), principalFrom(r.Context()).viewScope()); {
 	case errors.Is(err, errNotFound):
 		jsonErr(w, http.StatusNotFound, "no such paste")
 	case err != nil:
@@ -953,7 +953,7 @@ func (s *Server) deletePaste(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listPastes(w http.ResponseWriter, r *http.Request) {
 	p := principalFrom(r.Context())
-	ps, err := s.st.ListPastes(r.Context(), p.ownerScope())
+	ps, err := s.st.ListPastes(r.Context(), p.viewScope())
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "storage error")
 		return
@@ -965,10 +965,10 @@ func (s *Server) listPastes(w http.ResponseWriter, r *http.Request) {
 			"id": p.ID, "title": p.Title, "lang": p.Lang, "size": p.Size, "url": base, "raw_url": base + "/raw",
 			"created_at": p.CreatedAt, "expires_at": p.ExpiresAt, "anon": p.Anon,
 		}
-		if p.Anon && principalFrom(r.Context()).isOwner() {
+		if p.Anon && principalFrom(r.Context()).canSeeAll() {
 			row["ip"] = p.IP // the owner sees who created anonymous pastes; the public view never does
 		}
-		if p.OwnerSub != "" && principalFrom(r.Context()).isOwner() {
+		if p.OwnerSub != "" && principalFrom(r.Context()).canSeeAll() {
 			row["owner_sub"] = p.OwnerSub
 		}
 		out = append(out, row)

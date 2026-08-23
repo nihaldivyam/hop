@@ -59,19 +59,69 @@ type principal struct {
 	Plan    string // users only: "free" | "pro"
 	Via     string // "session" | "token"
 	TokenID string // user token id when Via == "token"
+	Admin   bool   // session carries a role listed in HOP_ADMIN_ROLES
 }
 
 func (p principal) isOwner() bool { return p.Kind == "owner" }
 func (p principal) isUser() bool  { return p.Kind == "user" }
 func (p principal) authed() bool  { return p.Kind == "owner" || p.Kind == "user" }
+func (p principal) isAdmin() bool { return p.Kind == "user" && p.Admin }
 
-// ownerScope is the store filter: the owner token sees everything (""),
-// a user sees only their own rows.
+// canSeeAll covers the two callers allowed to browse and delete other people's
+// rows, and to see the metadata (creator IP, owner subject) attached to them.
+func (p principal) canSeeAll() bool { return p.isOwner() || p.isAdmin() }
+
+// ownerScope is the owner STAMPED ON ROWS THIS PRINCIPAL CREATES: a signed-in
+// user's own subject, empty for the owner token. Deliberately not admin-aware —
+// an admin's own pastes stay theirs rather than becoming ownerless.
 func (p principal) ownerScope() string {
 	if p.isUser() {
 		return p.Sub
 	}
 	return ""
+}
+
+// viewScope is the store filter for READING AND DELETING. Same as ownerScope for
+// ordinary users; empty (= everything) for the owner token and for admins.
+func (p principal) viewScope() string {
+	if p.isUser() && !p.Admin {
+		return p.Sub
+	}
+	return ""
+}
+
+// rolesFrom pulls a flat list of role names out of an id_token claim. Accepts an
+// array of strings or a single string; anything else (notably an object, which is
+// what Zitadel asserts natively) yields nothing rather than a misleading guess.
+func rolesFrom(claims map[string]any, key string) []string {
+	switch v := claims[key].(type) {
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	}
+	return nil
+}
+
+// hasAdminRole reports whether any of the session's roles is configured as admin.
+// Empty cfg.AdminRoles means the feature is off, whatever the IdP claims.
+func (s *Server) hasAdminRole(roles []string) bool {
+	for _, want := range s.cfg.AdminRoles {
+		for _, got := range roles {
+			if got == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type ctxKey int
@@ -231,10 +281,11 @@ const (
 )
 
 type session struct {
-	Sub   string `json:"sub"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
-	Exp   int64  `json:"exp"`
+	Sub   string   `json:"sub"`
+	Email string   `json:"email"`
+	Name  string   `json:"name"`
+	Roles []string `json:"roles,omitempty"` // from the id_token; re-read at each sign-in
+	Exp   int64    `json:"exp"`
 }
 
 type oauthState struct {
@@ -312,6 +363,10 @@ func (s *Server) identify(r *http.Request) (principal, error) {
 	}
 	if sess := s.accounts.sessionFrom(r); sess != nil {
 		p := principal{Kind: "user", Sub: sess.Sub, Email: sess.Email, Name: sess.Name, Via: "session"}
+		// Admin comes from the session cookie, which is sealed and re-minted on every
+		// sign-in — so revoking the role in the IdP takes effect at the next sign-in,
+		// not instantly. Session TTL bounds that window.
+		p.Admin = s.hasAdminRole(sess.Roles)
 		p.Plan = s.accounts.planFor(r.Context(), sess.Sub)
 		return p, nil
 	}
@@ -531,6 +586,9 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 		PreferredUsername string `json:"preferred_username"`
 	}
 	_ = idt.Claims(&claims)
+	var rawClaims map[string]any
+	_ = idt.Claims(&rawClaims)
+	roles := rolesFrom(rawClaims, s.cfg.RolesClaim)
 	name := claims.Name
 	if name == "" {
 		name = claims.PreferredUsername
@@ -539,7 +597,7 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	sess := session{Sub: idt.Subject, Email: claims.Email, Name: name, Exp: time.Now().Add(sessionTTL).Unix()}
+	sess := session{Sub: idt.Subject, Email: claims.Email, Name: name, Roles: roles, Exp: time.Now().Add(sessionTTL).Unix()}
 	sealed, err := s.accounts.seal(sess)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

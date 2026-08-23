@@ -53,7 +53,12 @@ type Config struct {
 	BillingURL        string   // BILLING_URL — internal entitlements service (http://billing:8084)
 	BillingToken      string   // BILLING_INTERNAL_TOKEN
 	BillingAccountURL string   // HOP_BILLING_ACCOUNT_URL — where users upgrade (linked from /account)
-	Plans             map[string]planLimits
+	// Admin sessions: a signed-in user whose roles claim contains one of AdminRoles
+	// browses and deletes everything, like the owner token. OFF unless HOP_ADMIN_ROLES
+	// is set — the claim comes from the IdP, so opting in is a decision to trust it.
+	AdminRoles []string // HOP_ADMIN_ROLES — comma list, e.g. "admin"; empty disables admin sessions
+	RolesClaim string   // HOP_ROLES_CLAIM — id_token claim holding a flat array of role names
+	Plans      map[string]planLimits
 }
 
 func loadConfig() (Config, error) {
@@ -86,6 +91,7 @@ func loadConfig() (Config, error) {
 		OIDCIssuer:        strings.TrimRight(os.Getenv("OIDC_ISSUER"), "/"),
 		OIDCClientID:      os.Getenv("OIDC_CLIENT_ID"),
 		OIDCClientSecret:  os.Getenv("OIDC_CLIENT_SECRET"),
+		RolesClaim:        env("HOP_ROLES_CLAIM", "roles"),
 		SessionSecret:     os.Getenv("HOP_SESSION_SECRET"),
 		CookieDomain:      os.Getenv("HOP_COOKIE_DOMAIN"),
 		BillingURL:        os.Getenv("BILLING_URL"),
@@ -96,6 +102,11 @@ func loadConfig() (Config, error) {
 	for _, u := range strings.Split(os.Getenv("OIDC_REDIRECT_URLS"), ",") {
 		if u = strings.TrimSpace(u); u != "" {
 			c.OIDCRedirectURLs = append(c.OIDCRedirectURLs, u)
+		}
+	}
+	for _, role := range strings.Split(os.Getenv("HOP_ADMIN_ROLES"), ",") {
+		if role = strings.TrimSpace(role); role != "" {
+			c.AdminRoles = append(c.AdminRoles, role)
 		}
 	}
 	if c.OIDCClientID != "" && c.OIDCIssuer == "" {

@@ -111,7 +111,32 @@ must carry `X-Requested-With: hop` (the UI does); API tokens never need it.
 | anonymous | HOP_ANON_* caps | ≤ 24 h / 7 d | random slug, confirmation page | HOP_ANON_*_RATE | — |
 | **free** (signed in) | 256 KiB | ≤ 30 d | custom slugs, direct redirect, ≤ 30 d | 30 / h | 500 |
 | **pro** | 1 MiB | forever allowed | forever allowed | 300 / h | 10 000 |
+| **admin** (signed in, `HOP_ADMIN_ROLES`) | as their plan | as their plan | as their plan | as their plan | sees/deletes everything |
 | owner token | instance limits | any | any | none | — |
+
+### Admin sessions
+
+Signing in gives you *your* links and pastes. Anonymous items have no owner, so no
+account could ever list or delete them — only `HOP_TOKEN` could, which meant
+administering the instance depended on a shared bearer secret.
+
+Set `HOP_ADMIN_ROLES=admin` and a signed-in user whose id_token carries that role in
+the `roles` claim (`HOP_ROLES_CLAIM` to rename it) browses and deletes everything,
+the same as the owner token. **Off unless you set it** — the claim comes from your
+IdP, so switching it on is a decision to trust what the IdP asserts.
+
+Two deliberate limits:
+
+- **Creating is unaffected.** An admin's own pastes are still stamped with their
+  subject; only reads and deletes widen. Otherwise an admin's items would become
+  ownerless and indistinguishable from anonymous ones.
+- **Purge stays token-only.** `DELETE /api/pastes?anon=1` wipes every anonymous item
+  at once; that one keeps needing `HOP_TOKEN`.
+
+The role is read at sign-in and sealed into the session cookie, so revoking it at the
+IdP takes effect on their next sign-in rather than instantly — the session TTL (7 days)
+bounds the window. The claim must be a **flat array of strings**; a nested object (what
+Zitadel asserts natively) is ignored rather than guessed at.
 
 Env: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (optional), `OIDC_REDIRECT_URLS`
 (comma list, one `…/auth/callback` per host; the one matching the request host is used),
@@ -174,6 +199,8 @@ Expired rows stop being served immediately and are deleted by a janitor every
 | `HOP_LISTEN` | `:8090` | listen address |
 | `HOP_DB` | `/data/hop.db` | SQLite file (WAL mode) |
 | `HOP_TOKEN` | *(empty — writes disabled)* | bearer token for the write API |
+| `HOP_ADMIN_ROLES` | *(empty — admin sessions off)* | comma list; a signed-in user holding one sees/deletes everything |
+| `HOP_ROLES_CLAIM` | `roles` | id_token claim holding a flat array of role names |
 | `HOP_LINKS_HOST` | `go.divyam.top` | host that serves short links |
 | `HOP_PASTE_HOST` | `paste.divyam.top` | host that serves pastes |
 | `HOP_MAX_PASTE_BYTES` | `262144` | paste size limit |

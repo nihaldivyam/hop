@@ -27,7 +27,7 @@
         <tr><th>Rate</th><td>{{.User.Limits.RatePerHour}} creates / hour</td></tr>
         <tr><th>Items</th><td>up to {{.User.Limits.MaxItems}} links + pastes</td></tr>
       </table>
-      {{if ne .User.Plan "pro"}}<p class="muted small">Need more? <a href="{{.BillingURL}}">Upgrade to Pro</a> — 1 MiB pastes, permanent links and pastes, higher rate limits, 10 000 items.</p>{{else}}<p class="muted small">Thanks for supporting hop. Manage billing at <a href="{{.BillingURL}}">{{.BillingURL}}</a>.</p>{{end}}
+      {{if eq .User.Plan "free"}}<p class="muted small">Need more? <a href="{{.BillingURL}}">Upgrade to Pro</a> — 1 MiB pastes, permanent links and pastes, higher rate limits, 10 000 items.</p>{{else}}<p class="muted small">Thanks for supporting hop. Manage billing at <a href="{{.BillingURL}}">{{.BillingURL}}</a>.</p>{{end}}
     </div>
   </section>
 

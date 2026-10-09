@@ -177,7 +177,7 @@
         .then(function (res) {
           btn.disabled = false;
           if (!res.ok) { showError(errText(res)); return; }
-          showResult(res.data.short_url, '→ ' + res.data.url + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires') + (res.data.anon ? ' · anonymous (visitors see a confirmation page first)' : ''));
+          showResult(res.data.short_url, '→ ' + res.data.url + (res.data.expires_at ? ' · expires ' + fmtDate(res.data.expires_at) : ' · never expires') + (res.data.anon ? ' · anonymous (visitors see a confirmation page first)' : (res.data.confirm ? ' · visitors see a confirmation page first (direct on Pro)' : '')));
           lURL.value = ''; lSlug.value = ''; if (token || sessionMode) loadList();
         }).catch(function () { btn.disabled = false; showError('network error'); });
     });

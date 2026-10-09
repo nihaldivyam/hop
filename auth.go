@@ -511,10 +511,21 @@ func (s *Server) oauthConfig(r *http.Request) *oauth2.Config {
 	}
 }
 
-// safeNext only allows same-site relative paths as post-login targets.
+// safeNext only allows same-site relative paths as post-login targets. "Starts with one
+// slash" is not enough: browsers read a backslash as a slash and drop tabs and newlines
+// inside a URL, so "/\evil.com" and "/<tab>/evil.com" are both //evil.com to them.
 func safeNext(n string) string {
-	if n == "" || !strings.HasPrefix(n, "/") || strings.HasPrefix(n, "//") || strings.ContainsAny(n, "\r\n") {
-		return "/account"
+	const fallback = "/account"
+	if n == "" || n[0] != '/' || strings.HasPrefix(n, "//") {
+		return fallback
+	}
+	for _, c := range n {
+		if c == '\\' || c < 0x20 || c == 0x7f {
+			return fallback
+		}
+	}
+	if u, err := url.Parse(n); err != nil || u.Scheme != "" || u.Host != "" || u.User != nil {
+		return fallback
 	}
 	return n
 }
@@ -765,6 +776,7 @@ type userView struct {
 	Limits                 planLimits
 	MaxPaste, MaxTTL       string
 	Forever                bool
+	Direct                 bool // their links redirect without the confirmation page
 }
 
 func (s *Server) userViewFor(r *http.Request) *userView {
@@ -778,7 +790,8 @@ func (s *Server) userViewFor(r *http.Request) *userView {
 	plan := s.accounts.planFor(r.Context(), sess.Sub)
 	lim := s.accounts.limitsFor(plan)
 	v := &userView{Sub: sess.Sub, Email: sess.Email, Name: sess.Name, Plan: plan, Limits: lim,
-		MaxPaste: humanSize(lim.MaxPasteBytes), Forever: lim.MaxTTL == 0}
+		MaxPaste: humanSize(lim.MaxPasteBytes), Forever: lim.MaxTTL == 0,
+		Direct: !s.cfg.FreeLinkInterstitial || directRedirect(plan)}
 	if lim.MaxTTL == 0 {
 		v.MaxTTL = "forever"
 	} else {

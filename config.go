@@ -41,6 +41,7 @@ type Config struct {
 	AnonLinkBurst        int           // HOP_ANON_LINK_BURST
 	AnonLinkDailyCap     int64         // HOP_ANON_LINK_DAILY_CAP — global anonymous links per UTC day
 	AnonLinkInterstitial bool          // HOP_ANON_LINK_INTERSTITIAL — browsers see a confirmation page before an anonymous redirect
+	FreeLinkInterstitial bool          // HOP_FREE_LINK_INTERSTITIAL — same page for links owned by a free-plan account
 
 	// Accounts (off unless OIDC_CLIENT_ID is set): sign in through an OIDC
 	// provider, own your links/pastes, per-user API tokens, plan-based limits.
@@ -87,6 +88,7 @@ func loadConfig() (Config, error) {
 		AnonLinkBurst:        2,
 		AnonLinkDailyCap:     200,
 		AnonLinkInterstitial: env("HOP_ANON_LINK_INTERSTITIAL", "true") == "true",
+		FreeLinkInterstitial: env("HOP_FREE_LINK_INTERSTITIAL", "true") == "true",
 
 		OIDCIssuer:        strings.TrimRight(os.Getenv("OIDC_ISSUER"), "/"),
 		OIDCClientID:      os.Getenv("OIDC_CLIENT_ID"),

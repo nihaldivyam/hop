@@ -23,7 +23,7 @@
         <tr><th>Pastes up to</th><td>{{.User.MaxPaste}}</td></tr>
         <tr><th>Lifetime</th><td>{{if .User.Forever}}up to forever (you choose){{else}}up to {{.User.MaxTTL}}{{end}}</td></tr>
         <tr><th>Custom paste names &amp; link slugs</th><td>yes</td></tr>
-        <tr><th>Redirects</th><td>direct (no confirmation page)</td></tr>
+        <tr><th>Redirects</th><td>{{if .User.Direct}}direct (no confirmation page){{else}}visitors see a confirmation page naming the destination first (direct on Pro){{end}}</td></tr>
         <tr><th>Rate</th><td>{{.User.Limits.RatePerHour}} creates / hour</td></tr>
         <tr><th>Items</th><td>up to {{.User.Limits.MaxItems}} links + pastes</td></tr>
       </table>

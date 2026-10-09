@@ -109,7 +109,7 @@ must carry `X-Requested-With: hop` (the UI does); API tokens never need it.
 | plan | pastes up to | lifetime | links | rate | items |
 |---|---|---|---|---|---|
 | anonymous | HOP_ANON_* caps | ≤ 24 h / 7 d | random slug, confirmation page | HOP_ANON_*_RATE | — |
-| **free** (signed in) | 256 KiB | ≤ 30 d | custom slugs, direct redirect, ≤ 30 d | 30 / h | 500 |
+| **free** (signed in) | 256 KiB | ≤ 30 d | custom slugs, confirmation page, ≤ 30 d | 30 / h | 500 |
 | **pro** | 1 MiB | forever allowed | forever allowed | 300 / h | 10 000 |
 | **vip** | as pro | as pro | as pro | as pro | as pro |
 | **admin** (signed in, `HOP_ADMIN_ROLES`) | as their plan | as their plan | as their plan | as their plan | sees/deletes everything |
@@ -181,8 +181,9 @@ and [Anonymous short links](#anonymous-short-links)). Reads are anonymous.
 | `GET` | `/healthz` | | `200 ok` if the DB answers |
 
 Public side — links host: `GET /{slug}` → `302`, hits and last-use recorded
-(anonymous links: browsers get a `200` confirmation page first, `GET /{slug}/go`
-does the redirect — see [Anonymous short links](#anonymous-short-links)).
+(anonymous links and links owned by a free-plan account: browsers get a `200`
+confirmation page first, `GET /{slug}/go` does the redirect — see
+[Anonymous short links](#anonymous-short-links)).
 Pastes host: `GET /{id}` → `text/plain`; `GET /{id}.{ext}`, `?html=1` or a
 browser `Accept: text/html` → a dark, numbered HTML view; `GET /{id}/raw` →
 always plain text. A browser opening a *free* valid name (`GET /{name}`,
@@ -226,6 +227,7 @@ Expired rows stop being served immediately and are deleted by a janitor every
 | `HOP_ANON_LINK_BURST` | `2` | burst allowed on top of `HOP_ANON_LINK_RATE` |
 | `HOP_ANON_LINK_DAILY_CAP` | `200` | global anonymous links per UTC day (→ `429 daily cap reached`) |
 | `HOP_ANON_LINK_INTERSTITIAL` | `true` | browsers see a confirmation page before an anonymous redirect |
+| `HOP_FREE_LINK_INTERSTITIAL` | `true` | the same page before links owned by a free-plan account (sign-up is open, so these are no more vetted than anonymous ones); follows the owner's current plan, so upgrading makes old links direct. Free-plan links also get the anonymous destination rules (no private addresses, no credentials, not this service) |
 
 ## Name your own paste URL
 

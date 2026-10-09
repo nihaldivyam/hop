@@ -5,19 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
-<title>Leaving via an anonymous short link — hop</title>
+<title>Leaving via {{if .Anon}}an anonymous{{else}}an unchecked{{end}} short link — hop</title>
 <link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
 </head>
 <body>
 {{template "sitenav" .}}
 <main class="landing interstitial">
   <p class="eyebrow">hop · short links</p>
-  <h1>You're about to leave via an anonymous short link</h1>
-  <p class="lead"><code>https://{{.LinksHost}}/{{.Slug}}</code> was created anonymously. It points to:</p>
+  <h1>You're about to leave via {{if .Anon}}an anonymous{{else}}an unchecked{{end}} short link</h1>
+  <p class="lead"><code>https://{{.LinksHost}}/{{.Slug}}</code> was created {{if .Anon}}anonymously{{else}}by a free account, which anyone can open{{end}}. It points to:</p>
   <p class="dest"><strong>{{.Host}}</strong><br><span class="full">{{.URL}}</span></p>
   <p class="actions"><a class="btn go" href="{{.GoURL}}" rel="noreferrer noopener">Continue →</a> <a class="btn ghost" href="/">Back to {{.LinksHost}}</a></p>
   <p class="muted small">created {{.Created}} ago · expires {{.Expires}} · not checked by anyone — if this looks like phishing or abuse, <a href="https://divyam.top/#contact">report it</a>.</p>
-  <footer class="foot"><p><a href="{{.Repo}}">hop source</a> · anonymous links show this page first; links created with the token redirect directly</p></footer>
+  <footer class="foot"><p><a href="{{.Repo}}">hop source</a> · anonymous and free-account links show this page first; links from paid plans and the owner redirect directly</p></footer>
 </main>
 </body>
 </html>

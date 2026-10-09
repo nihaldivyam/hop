@@ -47,7 +47,7 @@
   {{end}}
 
   <footer class="foot">
-    <p><a href="{{.Repo}}">hop source</a> · any free <code>{{.PasteHost}}/&lt;name&gt;</code> can be claimed this way (names: {{.IDRule}}){{if .PublicPastes}}; anonymous pastes expire in {{.AnonTTL}}, so names free up again{{end}} · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
+    <p><a href="{{.Repo}}">hop source</a> · any free <code>{{.PasteHost}}/&lt;name&gt;</code> can be claimed this way (names: {{.IDRule}}){{if .PublicPastes}}; anonymous pastes expire in {{.AnonTTL}}{{if .NameHold}}, and a name stays reserved for {{.NameHold}} after its paste is gone, so an old link never shows someone else's text{{else}}, so names free up again{{end}}{{end}} · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
   </footer>
 </main>
 <script src="/static/app.js?v={{.AssetVer}}"></script>

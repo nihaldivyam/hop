@@ -69,7 +69,7 @@
     {{template "paste-form" .}}
     {{else}}
     <form class="card{{if and (not .PublicLinks) (not .User)}} hidden{{end}}" id="create-form" autocomplete="off">
-      {{if .User}}<p class="badge" id="user-badge">Signed in · {{.User.Plan}} plan — custom slugs, direct redirect, {{if .User.Forever}}any lifetime{{else}}links live up to {{.User.MaxTTL}}{{end}}.</p>{{end}}
+      {{if .User}}<p class="badge" id="user-badge">Signed in · {{.User.Plan}} plan — custom slugs, {{if .User.Direct}}direct redirect{{else}}confirmation page before the redirect{{end}}, {{if .User.Forever}}any lifetime{{else}}links live up to {{.User.MaxTTL}}{{end}}.</p>{{end}}
       {{if .PublicLinks}}<p class="badge{{if .User}} hidden{{end}}" id="anon-badge">Anonymous — random slug, expires in {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, opens a confirmation page first{{end}}.</p>{{end}}
       <label>Long URL <input type="url" id="l-url" required placeholder="https://…"></label>
       <div class="row">

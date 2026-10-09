@@ -314,11 +314,12 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "ok\n")
 }
 
-// redirect serves GET /{slug}. Token-created links always 302. Anonymous links
-// 302 as well, except for browsers (Accept: text/html) when the interstitial
-// is on: they get a 200 confirmation page that names the destination and
-// links to /{slug}/go — a human sees where an anonymous link leads before
-// following it; curl/bots are not the concern and go straight through.
+// redirect serves GET /{slug}. Links made with the owner token or by an account on a
+// paid plan always 302. Anonymous links and links owned by a free-plan account 302 as
+// well, except for browsers (Accept: text/html) when the interstitial is on: they get a
+// 200 confirmation page that names the destination and links to /{slug}/go — a human
+// sees where an unvetted link leads before following it; curl/bots are not the concern
+// and go straight through.
 func (s *Server) redirect(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	l, err := s.st.GetLink(r.Context(), slug)
@@ -330,11 +331,34 @@ func (s *Server) redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if l.Anon && s.cfg.AnonLinkInterstitial && strings.Contains(r.Header.Get("Accept"), "text/html") {
+	if strings.Contains(r.Header.Get("Accept"), "text/html") && s.needsConfirm(r, l) {
 		s.interstitial(w, r, l)
 		return
 	}
 	s.follow(w, r, l)
+}
+
+// directRedirect reports whether a plan's links skip the confirmation page: every paid
+// plan does. Free does not, because sign-up is open and a free account costs nothing, so
+// its links are as unvetted as anonymous ones.
+func directRedirect(plan string) bool { return plan != "" && plan != "free" }
+
+// needsConfirm decides whether a browser sees the confirmation page before this link.
+// For an owned link it follows the owner's plan as billing reports it now (cached), not
+// the plan on the day the link was made: upgrading frees old links, a lapsed plan brings
+// the page back.
+func (s *Server) needsConfirm(r *http.Request, l *Link) bool {
+	if l.Anon {
+		return s.cfg.AnonLinkInterstitial
+	}
+	if l.OwnerSub == "" || !s.cfg.FreeLinkInterstitial {
+		return false
+	}
+	// a redirect must not hang on billing, and a visitor who gives up must not get "free"
+	// cached for the owner: short deadline, detached from the request
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 500*time.Millisecond)
+	defer cancel()
+	return !directRedirect(s.accounts.billing.plan(ctx, l.OwnerSub))
 }
 
 // redirectGo serves GET /{slug}/go — the "Continue" target of the interstitial.
@@ -351,8 +375,8 @@ func (s *Server) redirectGo(w http.ResponseWriter, r *http.Request) {
 	s.follow(w, r, l)
 }
 
-// interstitial renders the confirmation page for an anonymous link: no scripts,
-// strict CSP, not indexed, no referrer leaks, never cached.
+// interstitial renders the confirmation page for an anonymous or free-plan link: no
+// scripts, strict CSP, not indexed, no referrer leaks, never cached.
 func (s *Server) interstitial(w http.ResponseWriter, r *http.Request, l *Link) {
 	u, _ := url.Parse(l.URL)
 	host := ""
@@ -368,7 +392,7 @@ func (s *Server) interstitial(w http.ResponseWriter, r *http.Request, l *Link) {
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
 	w.Header().Set("Cache-Control", "no-store")
 	data := map[string]any{
-		"Slug": l.Slug, "URL": l.URL, "Host": host, "GoURL": "/" + l.Slug + "/go",
+		"Slug": l.Slug, "URL": l.URL, "Host": host, "GoURL": "/" + l.Slug + "/go", "Anon": l.Anon,
 		"Created": humanDur(time.Since(l.CreatedAt)), "Expires": expires,
 		"AssetVer": s.assetVer, "Repo": s.cfg.RepoURL, "LinksHost": s.cfg.LinksHost,
 		"Accounts": s.accounts.enabled(), "User": s.userViewFor(r),
@@ -501,7 +525,7 @@ func (s *Server) createLinkGate(w http.ResponseWriter, r *http.Request) {
 }
 
 // createLink is the authenticated path: owner token (unlimited) or a signed-in
-// user (plan limits): custom slugs, direct redirects, TTL 0 allowed where the plan allows.
+// user (plan limits): custom slugs, TTL 0 and direct redirects where the plan allows.
 func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
 	p := principalFrom(r.Context())
 	if p.isUser() {
@@ -539,10 +563,11 @@ func (s *Server) createLinkAnon(w http.ResponseWriter, r *http.Request) {
 	s.storeLink(w, r, principal{Kind: "anon"}, true, ip)
 }
 
-// anonTargetOK applies the stricter destination rules for anonymous links:
-// absolute http(s), no credentials in the URL, no private/loopback/link-local
-// IP literals or localhost (no pointing the public redirector at internal
-// things), not this service itself (no redirect chains), ≤ 2048 chars.
+// anonTargetOK applies the stricter destination rules for links nobody vouches for
+// (anonymous, and free-plan accounts): absolute http(s), no credentials in the URL, no
+// private/loopback/link-local IP literals or localhost (no pointing the public
+// redirector at internal things), not this service itself (no redirect chains),
+// ≤ 2048 chars.
 func (s *Server) anonTargetOK(u *url.URL) (string, bool) {
 	if len(u.String()) > 2048 {
 		return "url longer than 2048 characters", false
@@ -577,11 +602,18 @@ func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, p principal, 
 		jsonErr(w, http.StatusBadRequest, "url must be absolute http(s)")
 		return
 	}
-	if anon {
+	// who gets the confirmation page, and with it the stricter destination rules
+	freeUser := p.isUser() && !directRedirect(p.Plan)
+	if anon || freeUser {
 		if msg, ok := s.anonTargetOK(u); !ok {
+			if freeUser {
+				msg = strings.Replace(msg, "for anonymous links", "on the free plan", 1)
+			}
 			jsonErr(w, http.StatusBadRequest, msg)
 			return
 		}
+	}
+	if anon {
 		if req.Slug != "" {
 			jsonErr(w, http.StatusBadRequest, "custom slugs need the token; anonymous links get a random slug")
 			return
@@ -658,6 +690,8 @@ func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, p principal, 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"slug": l.Slug, "short_url": "https://" + s.cfg.LinksHost + "/" + l.Slug,
 		"url": l.URL, "expires_at": l.ExpiresAt, "anon": anon, "owned": p.isUser(),
+		// browsers get the confirmation page before this link
+		"confirm": (anon && s.cfg.AnonLinkInterstitial) || (freeUser && s.cfg.FreeLinkInterstitial),
 	})
 }
 

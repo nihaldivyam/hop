@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -615,4 +616,60 @@ func jhas(b []byte, key, val string) bool {
 	}
 	v, ok := m[key]
 	return ok && fmt.Sprint(v) == val
+}
+
+// billing sells a third plan, "vip", described as "everything in Pro". hop used to accept
+// only "free" and "pro" from billing, so a VIP subscriber fell back to free limits (and
+// billing was re-asked every 30 s, the error TTL, instead of every 5 min).
+func TestVIPPlanGetsProLimits(t *testing.T) {
+	var calls atomic.Int64
+	inner := fakeBilling(t, "btok", map[string]string{"u-vip": "vip", "u-gold": "gold"})
+	bill := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(bill.Close)
+	e := accountsServer(t, func(c *Config) { c.BillingURL, c.BillingToken = bill.URL, "btok" })
+	vip := e.signIn(t, "paste.example", "u-vip", "v@example.com", "V")
+	gold := e.signIn(t, "paste.example", "u-gold", "g@example.com", "G")
+
+	_, b := do(t, e.ts, "GET", "paste.example", "/me", "", "", nil, sess(vip))
+	if !jhas(b, "plan", "vip") {
+		t.Fatalf("/me vip: %s", b)
+	}
+	var me struct {
+		Limits planLimits `json:"limits"`
+	}
+	pro := defaultPlans()["pro"]
+	if err := json.Unmarshal(b, &me); err != nil || me.Limits.MaxPasteBytes != pro.MaxPasteBytes || me.Limits.RatePerHour != pro.RatePerHour || me.Limits.MaxItems != pro.MaxItems {
+		t.Fatalf("vip should carry pro's limits, got %+v (%v)", me.Limits, err)
+	}
+	// a paste bigger than free allows, kept forever: fine for vip
+	big := strings.Repeat("x", 300<<10)
+	r, b := do(t, e.ts, "POST", "paste.example", "/api/pastes", "", "text/plain", strings.NewReader(big), mergeHdr(sess(vip), "X-TTL", "0"))
+	var out struct {
+		ExpiresAt *time.Time `json:"expires_at"`
+	}
+	if r.StatusCode != 201 || json.Unmarshal(b, &out) != nil || out.ExpiresAt != nil {
+		t.Fatalf("vip forever 300 KiB: %d %.80s", r.StatusCode, b)
+	}
+	// the account page names the plan and does not try to sell Pro to someone on VIP
+	if _, b := do(t, e.ts, "GET", "paste.example", "/account", "", "", nil, sess(vip)); !strings.Contains(string(b), `<span class="plan-pill big">vip</span>`) || strings.Contains(string(b), "Upgrade to Pro") {
+		t.Fatalf("vip account page: upsell shown or plan missing")
+	}
+	// the answer is cached like any good one: several requests, one billing call for this user
+	before := calls.Load()
+	for i := 0; i < 3; i++ {
+		do(t, e.ts, "GET", "paste.example", "/me", "", "", nil, sess(vip))
+	}
+	if n := calls.Load() - before; n != 0 {
+		t.Fatalf("vip plan should be cached, billing was asked %d more times", n)
+	}
+	if got := e.s.accounts.billing.cache["u-vip"]; time.Until(got.until) < 4*time.Minute {
+		t.Fatalf("vip cached for %s, want the full 5 min", time.Until(got.until))
+	}
+	// a plan hop has never heard of still fails closed
+	if _, b := do(t, e.ts, "GET", "paste.example", "/me", "", "", nil, sess(gold)); !jhas(b, "plan", "free") {
+		t.Fatalf("/me unknown plan: %s", b)
+	}
 }

@@ -43,10 +43,24 @@ type planLimits struct {
 }
 
 func defaultPlans() map[string]planLimits {
+	pro := planLimits{Name: "pro", MaxPasteBytes: 1 << 20, MaxTTL: 0, DefaultPasteTTL: 30 * 24 * time.Hour, RatePerHour: 300, Burst: 30, MaxItems: 10000}
+	// billing's VIP plan is "everything in Pro" plus things that live outside hop, so here
+	// it is Pro under its own name.
+	vip := pro
+	vip.Name = "vip"
 	return map[string]planLimits{
 		"free": {Name: "free", MaxPasteBytes: 256 << 10, MaxTTL: 30 * 24 * time.Hour, DefaultPasteTTL: 30 * 24 * time.Hour, RatePerHour: 30, Burst: 10, MaxItems: 500},
-		"pro":  {Name: "pro", MaxPasteBytes: 1 << 20, MaxTTL: 0, DefaultPasteTTL: 30 * 24 * time.Hour, RatePerHour: 300, Burst: 30, MaxItems: 10000},
+		"pro":  pro,
+		"vip":  vip,
 	}
+}
+
+// knownPlan reports whether billing's answer is a plan hop has limits for. Anything else
+// (a plan added to billing before hop learned about it, a garbled reply) is treated as an
+// error by the caller, i.e. free: unknown must never mean more access.
+func knownPlan(plan string) bool {
+	_, ok := defaultPlans()[plan]
+	return ok
 }
 
 // --- principal --------------------------------------------------------------------
@@ -56,7 +70,7 @@ type principal struct {
 	Sub     string
 	Email   string
 	Name    string
-	Plan    string // users only: "free" | "pro"
+	Plan    string // users only: "free" | "pro" | "vip"
 	Via     string // "session" | "token"
 	TokenID string // user token id when Via == "token"
 	Admin   bool   // session carries a role listed in HOP_ADMIN_ROLES
@@ -416,8 +430,9 @@ func newBillingClient(url, token string) *billingClient {
 		http: &http.Client{Timeout: 3 * time.Second}, cache: map[string]planCacheEntry{}}
 }
 
-// plan returns "free" or "pro" for a subject, cached for 5 minutes; on any
-// error it assumes "free" (cached briefly so a down billing service is not hammered).
+// plan returns "free", "pro" or "vip" for a subject, cached for 5 minutes; on any error,
+// or a plan hop does not know, it assumes "free" (cached briefly so a down billing service
+// is not hammered).
 func (b *billingClient) plan(ctx context.Context, sub string) string {
 	if b.url == "" {
 		return "free"
@@ -437,7 +452,7 @@ func (b *billingClient) plan(ctx context.Context, sub string) string {
 			var out struct {
 				Plan string `json:"plan"`
 			}
-			if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&out) == nil && (out.Plan == "free" || out.Plan == "pro") {
+			if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&out) == nil && knownPlan(out.Plan) {
 				plan, ttl = out.Plan, 5*time.Minute
 			}
 			resp.Body.Close()

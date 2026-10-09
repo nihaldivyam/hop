@@ -111,6 +111,7 @@ must carry `X-Requested-With: hop` (the UI does); API tokens never need it.
 | anonymous | HOP_ANON_* caps | ≤ 24 h / 7 d | random slug, confirmation page | HOP_ANON_*_RATE | — |
 | **free** (signed in) | 256 KiB | ≤ 30 d | custom slugs, direct redirect, ≤ 30 d | 30 / h | 500 |
 | **pro** | 1 MiB | forever allowed | forever allowed | 300 / h | 10 000 |
+| **vip** | as pro | as pro | as pro | as pro | as pro |
 | **admin** (signed in, `HOP_ADMIN_ROLES`) | as their plan | as their plan | as their plan | as their plan | sees/deletes everything |
 | owner token | instance limits | any | any | none | — |
 
@@ -142,8 +143,8 @@ Env: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (optional), `OIDC_RED
 (comma list, one `…/auth/callback` per host; the one matching the request host is used),
 `HOP_SESSION_SECRET` (random-and-logged if empty — set it, or sessions die on restart),
 `HOP_COOKIE_DOMAIN` (e.g. `divyam.top`: one sign-in for both hosts), `BILLING_URL` +
-`BILLING_INTERNAL_TOKEN` (`GET /internal/entitlements/{sub}` → `{"plan":"free"|"pro"}`,
-cached 5 min, "free" on error/unset), `HOP_BILLING_ACCOUNT_URL` (the upgrade link).
+`BILLING_INTERNAL_TOKEN` (`GET /internal/entitlements/{sub}` → `{"plan":"free"|"pro"|"vip"}`,
+cached 5 min; "free" on error, on a plan hop does not know, or when unset), `HOP_BILLING_ACCOUNT_URL` (the upgrade link).
 Discovery is retried in the background, so a slow IdP never blocks links and pastes.
 
 ## Paste view

@@ -27,6 +27,7 @@ type Link struct {
 	Anon      bool       `json:"anon"`                // created without a token (public links mode)
 	IP        string     `json:"ip,omitempty"`        // creator IP, anonymous links only; never shown publicly
 	OwnerSub  string     `json:"owner_sub,omitempty"` // signed-in user (OIDC subject) who created it; empty for owner-token/anonymous items
+	Reclaim   bool       `json:"-"`                   // creator may take a held (retired) slug: the owner token
 }
 
 type Paste struct {
@@ -40,9 +41,15 @@ type Paste struct {
 	Anon      bool       `json:"anon"`                // created without a token (public pastes mode)
 	IP        string     `json:"ip,omitempty"`        // creator IP, anonymous pastes only; never shown on the public view
 	OwnerSub  string     `json:"owner_sub,omitempty"` // signed-in user (OIDC subject) who created it; empty for owner-token/anonymous items
+	Reclaim   bool       `json:"-"`                   // creator may take a held (retired) id: the owner token
 }
 
-type Store struct{ db *sql.DB }
+// Store holds links and pastes. nameHold is how long a slug or paste id stays reserved
+// after its item expired or was deleted (0 = names are free again at once).
+type Store struct {
+	db       *sql.DB
+	nameHold time.Duration
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS links (
@@ -61,6 +68,16 @@ CREATE TABLE IF NOT EXISTS pastes (
   size       INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   expires_at INTEGER
+);
+-- Names (link slugs, paste ids) whose item is gone. While a row is younger than the hold, the
+-- name cannot be taken by anyone but whoever had it, so a URL that was shared once never
+-- starts serving a stranger's link or text.
+CREATE TABLE IF NOT EXISTS retired (
+  kind       TEXT NOT NULL,            -- 'link' | 'paste'
+  id         TEXT NOT NULL,
+  owner_sub  TEXT,                     -- who had it (NULL: anonymous or the owner token)
+  retired_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, id)
 );
 CREATE INDEX IF NOT EXISTS links_expires ON links(expires_at);
 CREATE INDEX IF NOT EXISTS pastes_expires ON pastes(expires_at);
@@ -200,13 +217,83 @@ func (s *Store) CreateLink(ctx context.Context, l *Link) error {
 	if l.Anon {
 		anon = 1
 	}
-	_, err := s.db.ExecContext(ctx,
+	return s.createNamed(ctx, "link", l.Slug, l.OwnerSub, l.Reclaim,
 		`INSERT INTO links (slug, url, created_at, expires_at, anon, ip, owner_sub) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		l.Slug, l.URL, l.CreatedAt.Unix(), toUnix(l.ExpiresAt), anon, nullStr(l.IP), nullStr(l.OwnerSub))
-	if isSQLiteUnique(err) {
-		return errExists
+}
+
+// --- retired names ------------------------------------------------------------
+
+// createNamed runs an INSERT for a link or paste unless its name is held. A held name is
+// released to the account that had it (owner != "" and equal) or to a reclaiming creator
+// (the owner token); for everyone else it reads as taken.
+func (s *Store) createNamed(ctx context.Context, kind, id, owner string, reclaim bool, insert string, args ...any) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	return err
+	defer tx.Rollback()
+	// the write comes first so the transaction holds the write lock from the start
+	res, err := tx.ExecContext(ctx, `DELETE FROM retired WHERE kind = ? AND id = ? AND (? OR retired_at <= ? OR (owner_sub IS NOT NULL AND owner_sub = ?))`,
+		kind, id, reclaim || s.nameHold <= 0, time.Now().Add(-s.nameHold).Unix(), owner)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var one int
+		switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM retired WHERE kind = ? AND id = ?`, kind, id).Scan(&one); {
+		case err == nil:
+			return errExists // held for someone else
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, insert, args...); isSQLiteUnique(err) {
+		return errExists
+	} else if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// retire records the names of the rows `where` selects from table (links|pastes) so they
+// stay reserved, then deletes those rows. Returns rows deleted.
+func (s *Store) retire(ctx context.Context, table, where string, args ...any) (int64, error) {
+	kind, col := "link", "slug"
+	if table == "pastes" {
+		kind, col = "paste", "id"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if s.nameHold > 0 {
+		q := `INSERT OR REPLACE INTO retired (kind, id, owner_sub, retired_at) SELECT ?, ` + col + `, owner_sub, ? FROM ` + table + ` WHERE ` + where
+		if _, err := tx.ExecContext(ctx, q, append([]any{kind, time.Now().Unix()}, args...)...); err != nil {
+			return 0, err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE `+where, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, tx.Commit()
+}
+
+// NameHeld reports whether a slug (kind "link") or paste id (kind "paste") is reserved.
+func (s *Store) NameHeld(ctx context.Context, kind, id string) (bool, error) {
+	if s.nameHold <= 0 {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM retired WHERE kind = ? AND id = ? AND retired_at > ?`,
+		kind, id, time.Now().Add(-s.nameHold).Unix()).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // GetLink returns errNotFound for unknown and expired slugs alike.
@@ -243,17 +330,17 @@ func (s *Store) TouchLink(ctx context.Context, slug string) error {
 // DeleteLink removes a slug. With owner != "" only a link owned by that user is
 // removed (a user cannot delete someone else's); the owner token passes "".
 func (s *Store) DeleteLink(ctx context.Context, slug, owner string) error {
-	var res sql.Result
+	var n int64
 	var err error
 	if owner == "" {
-		res, err = s.db.ExecContext(ctx, `DELETE FROM links WHERE slug = ?`, slug)
+		n, err = s.retire(ctx, "links", `slug = ?`, slug)
 	} else {
-		res, err = s.db.ExecContext(ctx, `DELETE FROM links WHERE slug = ? AND owner_sub = ?`, slug, owner)
+		n, err = s.retire(ctx, "links", `slug = ? AND owner_sub = ?`, slug, owner)
 	}
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		return errNotFound
 	}
 	return nil
@@ -302,12 +389,7 @@ func (s *Store) CountAnonLinksSince(ctx context.Context, t time.Time) (int64, er
 
 // PurgeAnonLinks deletes every anonymous link (the abuse kill switch). Returns rows removed.
 func (s *Store) PurgeAnonLinks(ctx context.Context) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM links WHERE anon = 1`)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	return s.retire(ctx, "links", `anon = 1`)
 }
 
 // --- pastes -----------------------------------------------------------------
@@ -317,13 +399,9 @@ func (s *Store) CreatePaste(ctx context.Context, p *Paste) error {
 	if p.Anon {
 		anon = 1
 	}
-	_, err := s.db.ExecContext(ctx,
+	return s.createNamed(ctx, "paste", p.ID, p.OwnerSub, p.Reclaim,
 		`INSERT INTO pastes (id, title, lang, content, size, created_at, expires_at, anon, ip, owner_sub) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Title, p.Lang, p.Content, p.Size, p.CreatedAt.Unix(), toUnix(p.ExpiresAt), anon, nullStr(p.IP), nullStr(p.OwnerSub))
-	if isSQLiteUnique(err) {
-		return errExists
-	}
-	return err
 }
 
 func (s *Store) GetPaste(ctx context.Context, id string) (*Paste, error) {
@@ -352,17 +430,17 @@ func (s *Store) GetPaste(ctx context.Context, id string) (*Paste, error) {
 
 // DeletePaste removes a paste; owner != "" restricts it to that user's pastes.
 func (s *Store) DeletePaste(ctx context.Context, id, owner string) error {
-	var res sql.Result
+	var n int64
 	var err error
 	if owner == "" {
-		res, err = s.db.ExecContext(ctx, `DELETE FROM pastes WHERE id = ?`, id)
+		n, err = s.retire(ctx, "pastes", `id = ?`, id)
 	} else {
-		res, err = s.db.ExecContext(ctx, `DELETE FROM pastes WHERE id = ? AND owner_sub = ?`, id, owner)
+		n, err = s.retire(ctx, "pastes", `id = ? AND owner_sub = ?`, id, owner)
 	}
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		return errNotFound
 	}
 	return nil
@@ -410,12 +488,7 @@ func (s *Store) CountAnonSince(ctx context.Context, t time.Time) (int64, error) 
 
 // PurgeAnon deletes every anonymous paste (the abuse kill switch). Returns rows removed.
 func (s *Store) PurgeAnon(ctx context.Context) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM pastes WHERE anon = 1`)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	return s.retire(ctx, "pastes", `anon = 1`)
 }
 
 func nullStr(s string) any {
@@ -425,22 +498,20 @@ func nullStr(s string) any {
 	return s
 }
 
-// Sweep deletes everything past its expiry. Returns rows removed.
+// Sweep deletes everything past its expiry (their names stay held, see retire) and drops
+// holds that have run out. Returns links + pastes removed.
 func (s *Store) Sweep(ctx context.Context) (int64, error) {
-	now := time.Now().Unix()
+	now := time.Now()
 	var total int64
-	for _, q := range []string{
-		`DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at <= ?`,
-		`DELETE FROM pastes WHERE expires_at IS NOT NULL AND expires_at <= ?`,
-	} {
-		res, err := s.db.ExecContext(ctx, q, now)
+	for _, table := range []string{"links", "pastes"} {
+		n, err := s.retire(ctx, table, `expires_at IS NOT NULL AND expires_at <= ?`, now.Unix())
+		total += n
 		if err != nil {
 			return total, err
 		}
-		n, _ := res.RowsAffected()
-		total += n
 	}
-	return total, nil
+	_, err := s.db.ExecContext(ctx, `DELETE FROM retired WHERE retired_at <= ?`, now.Add(-s.nameHold).Unix())
+	return total, err
 }
 
 // janitor runs Sweep on a ticker until ctx is done.

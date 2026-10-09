@@ -228,6 +228,7 @@ Expired rows stop being served immediately and are deleted by a janitor every
 | `HOP_ANON_LINK_DAILY_CAP` | `200` | global anonymous links per UTC day (→ `429 daily cap reached`) |
 | `HOP_ANON_LINK_INTERSTITIAL` | `true` | browsers see a confirmation page before an anonymous redirect |
 | `HOP_FREE_LINK_INTERSTITIAL` | `true` | the same page before links owned by a free-plan account (sign-up is open, so these are no more vetted than anonymous ones); follows the owner's current plan, so upgrading makes old links direct. Free-plan links also get the anonymous destination rules (no private addresses, no credentials, not this service) |
+| `HOP_NAME_HOLD` | `90d` | how long a link slug or paste id stays reserved after its item expired or was deleted, so a URL that was shared once never starts serving someone else's link or text. During the hold only the account that had the name, or the owner token, can take it again; everyone else gets `409`. `0` frees names at once |
 
 ## Name your own paste URL
 

@@ -50,6 +50,7 @@ func newServer(cfg Config, st *Store) *Server {
 	if cfg.Plans == nil {
 		cfg.Plans = defaultPlans()
 	}
+	st.nameHold = cfg.NameHold
 	s := &Server{cfg: cfg, st: st, links: http.NewServeMux(), pastes: http.NewServeMux(),
 		limiter: newLimiter(10, 30), static: map[string][]byte{}}
 	s.accounts = newAccounts(cfg, st)
@@ -242,7 +243,16 @@ func (s *Server) pageData(kind string, r *http.Request) map[string]any {
 		"Public": (kind == "pastes" && s.cfg.PublicPastes) || (kind == "links" && s.cfg.PublicLinks),
 		// name-your-own-URL rules (paste host)
 		"IDRule": pasteIDRule, "IDPattern": pasteIDRe.String()[1 : len(pasteIDRe.String())-1],
+		"NameHold": holdText(s.cfg.NameHold),
 	}
+}
+
+// holdText is the name hold for people ("90 days"), empty when names are not held.
+func holdText(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return humanTTL(d)
 }
 
 // createPage is what a browser gets for GET /{name} on the paste host when no
@@ -430,8 +440,14 @@ func (s *Server) showPaste(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.st.GetPaste(r.Context(), id)
 	if errors.Is(err, errNotFound) {
-		// "name your own URL": a browser landing on a free name gets an editor for it
-		if ext == "" && strings.Contains(r.Header.Get("Accept"), "text/html") {
+		// "name your own URL": a browser landing on a free name gets an editor for it.
+		// A name whose paste is gone is not free while it is held: plain 404, no editor.
+		held, herr := s.st.NameHeld(r.Context(), "paste", id)
+		if herr != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		if !held && ext == "" && strings.Contains(r.Header.Get("Accept"), "text/html") {
 			s.createPage(w, r, id)
 			return
 		}
@@ -619,7 +635,7 @@ func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, p principal, 
 			return
 		}
 	}
-	l := &Link{URL: u.String(), CreatedAt: time.Now().UTC(), Anon: anon, OwnerSub: p.ownerScope()}
+	l := &Link{URL: u.String(), CreatedAt: time.Now().UTC(), Anon: anon, OwnerSub: p.ownerScope(), Reclaim: p.Kind == "owner"}
 	if anon {
 		l.IP = ip
 	}
@@ -675,7 +691,7 @@ func (s *Server) storeLink(w http.ResponseWriter, r *http.Request, p principal, 
 			if err == nil {
 				break
 			}
-			if !errors.Is(err, errExists) {
+			if !errors.Is(err, errExists) || attempt > 30 {
 				jsonErr(w, http.StatusInternalServerError, "storage error")
 				return
 			}
@@ -873,7 +889,7 @@ func (s *Server) storePaste(w http.ResponseWriter, r *http.Request, p principal,
 		}
 	}
 	pst := &Paste{Title: clip(title, 120), Lang: clip(lang, 20), Content: body, Size: int64(len(body)),
-		CreatedAt: time.Now().UTC(), Anon: anon, OwnerSub: p.ownerScope()}
+		CreatedAt: time.Now().UTC(), Anon: anon, OwnerSub: p.ownerScope(), Reclaim: p.Kind == "owner"}
 	if anon {
 		pst.IP = ip
 	}
@@ -1051,6 +1067,7 @@ type limiter struct {
 	burst  float64
 	b      map[string]*bucket
 	lastGC time.Time
+	now    func() time.Time
 }
 
 type bucket struct {
@@ -1059,7 +1076,7 @@ type bucket struct {
 }
 
 func newLimiter(rate, burst float64) *limiter {
-	return &limiter{rate: rate, burst: burst, b: map[string]*bucket{}, lastGC: time.Now()}
+	return &limiter{rate: rate, burst: burst, b: map[string]*bucket{}, lastGC: time.Now(), now: time.Now}
 }
 
 func (l *limiter) allow(key string) bool {
@@ -1069,12 +1086,15 @@ func (l *limiter) allow(key string) bool {
 
 // allowWait is allow plus, on refusal, how long until the next token arrives.
 func (l *limiter) allowWait(key string) (bool, time.Duration) {
-	now := time.Now()
+	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if now.Sub(l.lastGC) > 5*time.Minute {
+		// Forget only buckets that have refilled completely: a new bucket starts full, so
+		// dropping one that is still part-empty would hand its key a fresh burst. At 5 per
+		// hour that turned "burst 2, then one every 12 minutes" into 2 every few minutes.
 		for k, v := range l.b {
-			if now.Sub(v.last) > 5*time.Minute {
+			if v.tokens+now.Sub(v.last).Seconds()*l.rate >= l.burst {
 				delete(l.b, k)
 			}
 		}

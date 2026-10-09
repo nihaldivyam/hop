@@ -139,8 +139,8 @@ curl -sS -H "Authorization: Bearer $HOP_TOKEN" \
   </section>
 
   <footer class="foot">
-    {{if .PublicPastes}}<p class="aup"><strong>Acceptable use:</strong> text only, no secrets, no abuse — anonymous pastes expire in {{.AnonTTL}} and can be <a href="https://divyam.top/#contact">reported</a>; the operator can see creator IPs of anonymous pastes.</p>{{end}}
-    {{if .PublicLinks}}<p class="aup"><strong>Acceptable use:</strong> http(s) only, no phishing, no abuse — anonymous links expire in {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, show a confirmation page{{end}} and can be <a href="https://divyam.top/#contact">reported</a>; the operator can see creator IPs of anonymous links.</p>{{end}}
+    {{if .PublicPastes}}<p class="aup"><strong>Acceptable use:</strong> text only, no secrets, no abuse — anonymous pastes expire in {{.AnonTTL}} and can be <a href="https://divyam.top/contact/">reported</a>; the operator can see creator IPs of anonymous pastes.</p>{{end}}
+    {{if .PublicLinks}}<p class="aup"><strong>Acceptable use:</strong> http(s) only, no phishing, no abuse — anonymous links expire in {{.AnonLinkTTL}}{{if .AnonLinkInterstitial}}, show a confirmation page{{end}} and can be <a href="https://divyam.top/contact/">reported</a>; the operator can see creator IPs of anonymous links.</p>{{end}}
     <p><a href="{{.Repo}}">hop source</a> · reads are public &amp; rate-limited, {{if .PublicPastes}}anonymous pastes are small and short-lived, the token lifts the limits{{else if .PublicLinks}}anonymous links are short-lived and confirmed, the token lifts the limits{{else}}writes need the token, pastes expire{{end}} · part of <a href="https://divyam.top/control/">Command &amp; Control</a></p>
   </footer>
 

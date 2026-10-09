@@ -42,6 +42,7 @@ type Config struct {
 	AnonLinkDailyCap     int64         // HOP_ANON_LINK_DAILY_CAP — global anonymous links per UTC day
 	AnonLinkInterstitial bool          // HOP_ANON_LINK_INTERSTITIAL — browsers see a confirmation page before an anonymous redirect
 	FreeLinkInterstitial bool          // HOP_FREE_LINK_INTERSTITIAL — same page for links owned by a free-plan account
+	NameHold             time.Duration // HOP_NAME_HOLD — how long a slug / paste id stays reserved after its item is gone (0 = not at all)
 
 	// Accounts (off unless OIDC_CLIENT_ID is set): sign in through an OIDC
 	// provider, own your links/pastes, per-user API tokens, plan-based limits.
@@ -100,6 +101,14 @@ func loadConfig() (Config, error) {
 		BillingToken:      os.Getenv("BILLING_INTERNAL_TOKEN"),
 		BillingAccountURL: env("HOP_BILLING_ACCOUNT_URL", "https://billing.divyam.top/account"),
 		Plans:             defaultPlans(),
+		NameHold:          90 * 24 * time.Hour,
+	}
+	if v := os.Getenv("HOP_NAME_HOLD"); v != "" {
+		d, err := parseTTL(v)
+		if err != nil {
+			return c, fmt.Errorf("HOP_NAME_HOLD: %w", err)
+		}
+		c.NameHold = d
 	}
 	for _, u := range strings.Split(os.Getenv("OIDC_REDIRECT_URLS"), ",") {
 		if u = strings.TrimSpace(u); u != "" {

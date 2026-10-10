@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ type Config struct {
 	DBPath          string        // HOP_DB
 	Token           string        // HOP_TOKEN — bearer token for all writes; empty disables writes
 	LinksHost       string        // HOP_LINKS_HOST — host that serves short links
+	LinksAliases    []string      // HOP_LINKS_ALIASES — former names of the links host that still reach hop (see isLinksHost)
 	PasteHost       string        // HOP_PASTE_HOST — host that serves pastes
 	MaxPasteBytes   int64         // HOP_MAX_PASTE_BYTES
 	DefaultPasteTTL time.Duration // HOP_DEFAULT_PASTE_TTL (0 = forever)
@@ -63,12 +65,16 @@ type Config struct {
 	Plans      map[string]planLimits
 }
 
+// defaultLinksHost is the links host when HOP_LINKS_HOST is unset. The CLI's built-in API
+// URL (defaultAPI) is derived from it, so the two cannot drift apart.
+const defaultLinksHost = "short.divyam.top"
+
 func loadConfig() (Config, error) {
 	c := Config{
 		Listen:          env("HOP_LISTEN", ":8090"),
 		DBPath:          env("HOP_DB", "/data/hop.db"),
 		Token:           os.Getenv("HOP_TOKEN"),
-		LinksHost:       strings.ToLower(env("HOP_LINKS_HOST", "go.divyam.top")),
+		LinksHost:       strings.ToLower(env("HOP_LINKS_HOST", defaultLinksHost)),
 		PasteHost:       strings.ToLower(env("HOP_PASTE_HOST", "paste.divyam.top")),
 		MaxPasteBytes:   256 << 10,
 		DefaultPasteTTL: 30 * 24 * time.Hour,
@@ -109,6 +115,17 @@ func loadConfig() (Config, error) {
 			return c, fmt.Errorf("HOP_NAME_HOLD: %w", err)
 		}
 		c.NameHold = d
+	}
+	for _, h := range strings.Split(os.Getenv("HOP_LINKS_ALIASES"), ",") {
+		h = strings.ToLower(strings.TrimSpace(h))
+		switch {
+		case h == "" || h == c.LinksHost || slices.Contains(c.LinksAliases, h):
+			// nothing to add
+		case h == c.PasteHost:
+			return c, fmt.Errorf("HOP_LINKS_ALIASES: %q is the paste host, it cannot also be a links host", h)
+		default:
+			c.LinksAliases = append(c.LinksAliases, h)
+		}
 	}
 	for _, u := range strings.Split(os.Getenv("OIDC_REDIRECT_URLS"), ",") {
 		if u = strings.TrimSpace(u); u != "" {

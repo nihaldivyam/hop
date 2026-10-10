@@ -48,8 +48,8 @@ func main() {
 		defer cancel()
 		srv.Shutdown(sctx)
 	}()
-	log.Printf("hop %s listening on %s (links=%s pastes=%s db=%s writes=%v %s)",
-		version, cfg.Listen, cfg.LinksHost, cfg.PasteHost, cfg.DBPath, cfg.Token != "", hs.accounts)
+	log.Printf("hop %s listening on %s (links=%s aliases=%v pastes=%s db=%s writes=%v %s)",
+		version, cfg.Listen, cfg.LinksHost, cfg.LinksAliases, cfg.PasteHost, cfg.DBPath, cfg.Token != "", hs.accounts)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hop — {{if eq .Kind "pastes"}}pastes{{else}}short links{{end}}</title>
-<meta name="description" content="hop: short links and pastes in one small Go binary. {{if eq .Kind "pastes"}}paste.{{else}}go.{{end}}divyam.top">
+<meta name="description" content="hop: short links and pastes in one small Go binary. {{if eq .Kind "pastes"}}{{.PasteHost}}{{else}}{{.LinksHost}}{{end}}">
 <link rel="stylesheet" href="/static/style.css?v={{.AssetVer}}">
 </head>
 <body data-kind="{{.Kind}}" data-links-host="{{.LinksHost}}" data-paste-host="{{.PasteHost}}"{{if .User}} data-user="{{.User.Email}}" data-plan="{{.User.Plan}}" data-plan-max-bytes="{{.User.Limits.MaxPasteBytes}}" data-plan-forever="{{if .User.Forever}}1{{else}}0{{end}}"{{end}}{{if .PublicPastes}} data-public-pastes="1" data-anon-max-bytes="{{.AnonMaxBytes}}" data-anon-ttl="{{.AnonTTL}}"{{end}}{{if .PublicLinks}} data-public-links="1" data-anon-link-ttl="{{.AnonLinkTTL}}"{{end}}>

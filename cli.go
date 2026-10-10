@@ -51,7 +51,7 @@ var (
 	stdin   io.Reader = os.Stdin
 )
 
-const defaultAPI = "https://go.divyam.top"
+const defaultAPI = "https://" + defaultLinksHost
 
 // --- client config -------------------------------------------------------------
 

@@ -11,7 +11,7 @@ https://paste.example/8hZp2Kq3  -> the paste as text/plain (HTML view in a brows
 
 I wrote it because I wanted a URL shortener and a paste bin that I actually
 own, that fit in ~30 MB of RAM next to everything else on a small VPS, and
-that I could drive from a terminal. It is deployed at `go.divyam.top` /
+that I could drive from a terminal. It is deployed at `short.divyam.top` /
 `paste.divyam.top` from a GitOps repo; this repo is the app.
 
 ## Using hop
@@ -21,7 +21,7 @@ anything; creating one needs the write token (`HOP_TOKEN`) — except when
 [anonymous pastes](#anonymous-pastes) / [anonymous short links](#anonymous-short-links)
 are enabled, which work without a token inside hard limits.
 
-- **In the browser** — open `https://go.divyam.top/` or `https://paste.divyam.top/`,
+- **In the browser** — open `https://short.divyam.top/` or `https://paste.divyam.top/`,
   paste the token once (it stays in that browser's `localStorage` and is only sent
   to that origin), then create links / pastes, copy URLs, see your list, delete.
 - **From a terminal** — `hop link <url> [slug]`, `… | hop paste`, `hop paste file`
@@ -203,7 +203,8 @@ Expired rows stop being served immediately and are deleted by a janitor every
 | `HOP_TOKEN` | *(empty — writes disabled)* | bearer token for the write API |
 | `HOP_ADMIN_ROLES` | *(empty — admin sessions off)* | comma list; a signed-in user holding one sees/deletes everything |
 | `HOP_ROLES_CLAIM` | `roles` | id_token claim holding a flat array of role names |
-| `HOP_LINKS_HOST` | `go.divyam.top` | host that serves short links |
+| `HOP_LINKS_HOST` | `short.divyam.top` | host that serves short links |
+| `HOP_LINKS_ALIASES` | *(empty)* | comma list of former names of the links host. Every host that is not the paste host already reaches the links side, so an old name needs no setting to keep resolving slugs and serving the token API. Listing it here does two more things: anonymous links can still be created on it, and it is refused as a destination for anonymous and free-plan links, so a redirect from the old name to the new one cannot be turned into a loop |
 | `HOP_PASTE_HOST` | `paste.divyam.top` | host that serves pastes |
 | `HOP_MAX_PASTE_BYTES` | `262144` | paste size limit |
 | `HOP_DEFAULT_PASTE_TTL` | `30d` | default paste lifetime (`0` = forever) |

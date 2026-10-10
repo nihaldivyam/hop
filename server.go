@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -523,17 +524,27 @@ type linkReq struct {
 	TTL  string `json:"ttl"`
 }
 
+// isLinksHost reports whether h is the links host or one of its former names
+// (HOP_LINKS_ALIASES). Routing does not need this: every host that is not the paste
+// host already gets the links mux. It matters in the two places that ask "is this us":
+// who may create anonymous links, and which destinations would point back at hop.
+// A former name typically has its pages redirected to the current host by the proxy
+// in front, with /api/* still passed through so old CLI configs keep working.
+func (s *Server) isLinksHost(h string) bool {
+	return h == s.cfg.LinksHost || slices.Contains(s.cfg.LinksAliases, h)
+}
+
 // createLinkGate decides between the token path and the anonymous path.
 // Anonymous creates exist only when HOP_PUBLIC_LINKS is on, only on the links
-// host, and only when the request carries no Authorization header at all — a
-// wrong token is still rejected with 401 rather than silently downgraded.
+// host (or a former name of it), and only when the request carries no Authorization
+// header at all — a wrong token is still rejected with 401 rather than silently downgraded.
 func (s *Server) createLinkGate(w http.ResponseWriter, r *http.Request) {
 	p, err := s.identify(r)
 	if err == nil && p.authed() {
 		s.auth(s.createLink).ServeHTTP(w, r)
 		return
 	}
-	if r.Header.Get("Authorization") == "" && s.cfg.PublicLinks && hostOf(r) == s.cfg.LinksHost {
+	if r.Header.Get("Authorization") == "" && s.cfg.PublicLinks && s.isLinksHost(hostOf(r)) {
 		s.createLinkAnon(w, r)
 		return
 	}
@@ -591,11 +602,13 @@ func (s *Server) anonTargetOK(u *url.URL) (string, bool) {
 	if u.User != nil {
 		return "url must not carry credentials (user:pass@)", false
 	}
-	host := strings.ToLower(u.Hostname())
+	// "example.com." is the same host as "example.com"; without the trim a trailing dot
+	// walks past every comparison below
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if host == "" {
 		return "url must be absolute http(s)", false
 	}
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == s.cfg.LinksHost || host == s.cfg.PasteHost {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || s.isLinksHost(host) || host == s.cfg.PasteHost {
 		return "that destination is not allowed for anonymous links", false
 	}
 	if ip := net.ParseIP(host); ip != nil {
